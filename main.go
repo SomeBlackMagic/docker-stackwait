@@ -31,10 +31,11 @@ const (
 
 func main() {
 	showLogs := flag.Bool("logs", false, "Stream container logs during healthcheck")
+	registryAuthPath := flag.String("registry-auth-path", "", "Path to directory containing custom Docker config.json for registry authentication")
 	flag.Parse()
 
 	if flag.NArg() < 2 {
-		log.Fatalf("usage: %s [--logs] <stack-name> <compose-file>", os.Args[0])
+		log.Fatalf("usage: %s [--logs] [--registry-auth-path DIR] <stack-name> <compose-file>", os.Args[0])
 	}
 
 	log.Printf("Start Docker Stack Wait version=%s revision=%s", version, revision)
@@ -53,9 +54,21 @@ func main() {
 	prev := saveCurrentImages(stack)
 
 	fmt.Printf("Deploying stack %q...\n", stack)
-	cmd := exec.Command("docker", "stack", "deploy", "--detach=false", "-c", file, stack)
+
+	args := []string{"stack", "deploy", "--detach=false", "-c", file}
+	if *registryAuthPath != "" {
+		args = append(args, "--with-registry-auth")
+	}
+
+	args = append(args, stack)
+
+	cmd := exec.Command("docker", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if *registryAuthPath != "" {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("DOCKER_CONFIG=%s", *registryAuthPath))
+	}
+
 	if err := cmd.Start(); err != nil {
 		log.Fatalf("deploy start: %v", err)
 	}
