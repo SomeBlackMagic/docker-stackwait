@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -28,13 +30,17 @@ const (
 )
 
 func main() {
-	if len(os.Args) < 3 {
-		log.Fatalf("usage: %s <stack-name> <compose-file>", os.Args[0])
+	showLogs := flag.Bool("logs", false, "Stream container logs during healthcheck")
+	flag.Parse()
+
+	if flag.NArg() < 2 {
+		log.Fatalf("usage: %s [--logs] <stack-name> <compose-file>", os.Args[0])
 	}
+
 	log.Printf("Start Docker Stack Wait version=%s revision=%s", version, revision)
 
-	stack := os.Args[1]
-	file := os.Args[2]
+	stack := flag.Arg(0)
+	file := flag.Arg(1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -47,7 +53,7 @@ func main() {
 	prev := saveCurrentImages(stack)
 
 	fmt.Printf("Deploying stack %q...\n", stack)
-	cmd := exec.Command("docker", "stack", "deploy", "-c", file, stack)
+	cmd := exec.Command("docker", "stack", "deploy", "--detach", "false", "-c", file, stack)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -60,6 +66,10 @@ func main() {
 
 	cmd.Wait()
 	fmt.Println("Stack deployment command finished. Monitoring containers...")
+
+	if *showLogs {
+		go streamContainerLogs(ctx, cli, stack)
+	}
 
 	success := waitForHealthy(ctx, cli, stack, waitTimeout)
 	cancel()
@@ -103,6 +113,42 @@ func streamStackEvents(ctx context.Context, cli *client.Client, stack string, wg
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func streamContainerLogs(ctx context.Context, cli *client.Client, stack string) {
+	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{})
+	if err != nil {
+		log.Printf("log streaming skipped: %v", err)
+		return
+	}
+	for _, c := range containers {
+		if !hasLabel(c.Labels, "com.docker.stack.namespace", stack) {
+			continue
+		}
+		go func(id, name string) {
+			reader, err := cli.ContainerLogs(ctx, id, types.ContainerLogsOptions{
+				ShowStdout: true,
+				ShowStderr: true,
+				Follow:     true,
+				Timestamps: true,
+				Tail:       "10",
+			})
+			if err != nil {
+				log.Printf("logs(%s): %v", name, err)
+				return
+			}
+			defer reader.Close()
+
+			prefix := fmt.Sprintf("[logs:%s]", strings.TrimPrefix(name, "/"))
+			scanner := bufio.NewScanner(reader)
+			for scanner.Scan() {
+				fmt.Printf("%s %s\n", prefix, scanner.Text())
+			}
+			if err := scanner.Err(); err != nil && err != io.EOF {
+				log.Printf("log stream error (%s): %v", name, err)
+			}
+		}(c.ID[:12], c.Names[0])
 	}
 }
 
