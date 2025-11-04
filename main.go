@@ -207,10 +207,25 @@ func waitForHealthy(ctx context.Context, cli *client.Client, stack string, limit
 func rollback(prev map[string]string) {
 	for svc, img := range prev {
 		fmt.Printf("Rolling back %s to %s\n", svc, img)
+
+		digestOut, err := exec.Command("docker", "inspect", "--format", "{{index .RepoDigests 0}}", img).Output()
+		if err == nil {
+			if digest := strings.TrimSpace(string(digestOut)); digest != "" {
+				fmt.Printf("Resolved digest: %s\n", digest)
+				img = digest
+			} else {
+				fmt.Printf("Digest not found locally, using tag: %s\n", img)
+			}
+		} else {
+			fmt.Printf("Image not found locally, using tag: %s\n", img)
+		}
+
 		cmd := exec.Command("docker", "service", "update", "--image", img, svc)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		_ = cmd.Run()
+		if err := cmd.Run(); err != nil {
+			log.Printf("rollback failed for %s: %v", svc, err)
+		}
 	}
 }
 
