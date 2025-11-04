@@ -53,7 +53,7 @@ func main() {
 	prev := saveCurrentImages(stack)
 
 	fmt.Printf("Deploying stack %q...\n", stack)
-	cmd := exec.Command("docker", "stack", "deploy", "--detach", "false", "-c", file, stack)
+	cmd := exec.Command("docker", "stack", "deploy", "--detach=false", "-c", file, stack)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
