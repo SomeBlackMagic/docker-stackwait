@@ -59,7 +59,6 @@ func main() {
 	if *registryAuthPath != "" {
 		args = append(args, "--with-registry-auth")
 	}
-
 	args = append(args, stack)
 
 	cmd := exec.Command("docker", args...)
@@ -96,6 +95,7 @@ func main() {
 	fmt.Println("All containers are healthy.")
 }
 
+// ---- Events ----
 func streamStackEvents(ctx context.Context, cli *client.Client, stack string, wg *sync.WaitGroup) {
 	defer wg.Done()
 	f := filters.NewArgs()
@@ -129,59 +129,61 @@ func streamStackEvents(ctx context.Context, cli *client.Client, stack string, wg
 	}
 }
 
+// ---- Logs ----
 func streamContainerLogs(ctx context.Context, cli *client.Client, stack string) {
-	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{})
+	known := make(map[string]bool)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			containers, err := cli.ContainerList(ctx, types.ContainerListOptions{})
+			if err != nil {
+				log.Printf("log streaming: list error: %v", err)
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			for _, c := range containers {
+				if !hasLabel(c.Labels, "com.docker.stack.namespace", stack) {
+					continue
+				}
+				if known[c.ID] {
+					continue
+				}
+				known[c.ID] = true
+				go followLogs(ctx, cli, c.ID, strings.TrimPrefix(c.Names[0], "/"))
+			}
+			time.Sleep(3 * time.Second)
+		}
+	}
+}
+
+func followLogs(ctx context.Context, cli *client.Client, id, name string) {
+	reader, err := cli.ContainerLogs(ctx, id, types.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Timestamps: true,
+		Tail:       "10",
+	})
 	if err != nil {
-		log.Printf("log streaming skipped: %v", err)
+		log.Printf("logs(%s): %v", name, err)
 		return
 	}
-	for _, c := range containers {
-		if !hasLabel(c.Labels, "com.docker.stack.namespace", stack) {
-			continue
-		}
-		go func(id, name string) {
-			reader, err := cli.ContainerLogs(ctx, id, types.ContainerLogsOptions{
-				ShowStdout: true,
-				ShowStderr: true,
-				Follow:     true,
-				Timestamps: true,
-				Tail:       "10",
-			})
-			if err != nil {
-				log.Printf("logs(%s): %v", name, err)
-				return
-			}
-			defer reader.Close()
+	defer reader.Close()
 
-			prefix := fmt.Sprintf("[logs:%s]", strings.TrimPrefix(name, "/"))
-			scanner := bufio.NewScanner(reader)
-			for scanner.Scan() {
-				fmt.Printf("%s %s\n", prefix, scanner.Text())
-			}
-			if err := scanner.Err(); err != nil && err != io.EOF {
-				log.Printf("log stream error (%s): %v", name, err)
-			}
-		}(c.ID[:12], c.Names[0])
+	prefix := fmt.Sprintf("[logs:%s]", name)
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		fmt.Printf("%s %s\n", prefix, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		log.Printf("log stream error (%s): %v", name, err)
 	}
 }
 
-func saveCurrentImages(stack string) map[string]string {
-	out, err := exec.Command("docker", "stack", "services", stack, "--format", "{{.Name}} {{.Image}}").Output()
-	if err != nil {
-		return map[string]string{}
-	}
-
-	prev := make(map[string]string)
-	sc := bufio.NewScanner(strings.NewReader(string(out)))
-	for sc.Scan() {
-		parts := strings.Fields(sc.Text())
-		if len(parts) == 2 {
-			prev[parts[0]] = parts[1]
-		}
-	}
-	return prev
-}
-
+// ---- Health ----
 func waitForHealthy(ctx context.Context, cli *client.Client, stack string, limit time.Duration) bool {
 	start := time.Now()
 	for {
@@ -217,6 +219,7 @@ func waitForHealthy(ctx context.Context, cli *client.Client, stack string, limit
 	}
 }
 
+// ---- Rollback ----
 func rollback(prev map[string]string) {
 	for svc, img := range prev {
 		fmt.Printf("Rolling back %s to %s\n", svc, img)
@@ -240,6 +243,24 @@ func rollback(prev map[string]string) {
 			log.Printf("rollback failed for %s: %v", svc, err)
 		}
 	}
+}
+
+// ---- Helpers ----
+func saveCurrentImages(stack string) map[string]string {
+	out, err := exec.Command("docker", "stack", "services", stack, "--format", "{{.Name}} {{.Image}}").Output()
+	if err != nil {
+		return map[string]string{}
+	}
+
+	prev := make(map[string]string)
+	sc := bufio.NewScanner(strings.NewReader(string(out)))
+	for sc.Scan() {
+		parts := strings.Fields(sc.Text())
+		if len(parts) == 2 {
+			prev[parts[0]] = parts[1]
+		}
+	}
+	return prev
 }
 
 func hasLabel(labels map[string]string, key, val string) bool {
