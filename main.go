@@ -53,7 +53,6 @@ func main() {
 	}
 
 	prev := saveCurrentImages(stack)
-
 	fmt.Printf("Deploying stack %q...\n", stack)
 
 	args := []string{"stack", "deploy", "--detach=false", "-c", file}
@@ -63,15 +62,39 @@ func main() {
 	args = append(args, stack)
 
 	cmd := exec.Command("docker", args...)
-	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if *registryAuthPath != "" {
 		cmd.Env = append(os.Environ(), fmt.Sprintf("DOCKER_CONFIG=%s", *registryAuthPath))
 	}
 
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Fatalf("pipe stdout: %v", err)
+	}
+
 	if err := cmd.Start(); err != nil {
 		log.Fatalf("deploy start: %v", err)
 	}
+
+	// Filter repeated "overall progress" lines
+	scanner := bufio.NewScanner(stdout)
+	var lastProgress string
+	go func() {
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "overall progress") {
+				if line != lastProgress {
+					fmt.Println(line)
+					lastProgress = line
+				}
+			} else {
+				fmt.Println(line)
+			}
+		}
+		if err := scanner.Err(); err != nil && err != io.EOF {
+			log.Printf("deploy output error: %v", err)
+		}
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
