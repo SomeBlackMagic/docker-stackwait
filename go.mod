@@ -7,6 +7,7 @@ toolchain go1.24.7
 require (
 	github.com/docker/docker v28.5.1+incompatible
 	github.com/docker/go-units v0.5.0
+	golang.org/x/net v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

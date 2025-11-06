@@ -51,6 +51,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # minimal runtime image
 FROM busybox
 
+COPY --from=curlimages/curl:8.7.1 /usr/bin/curl /usr/bin/curl
+
 # copy the binary (read/execute permissions are enough)
 COPY --from=build --chmod=0555 /workspace/docker-stackwait /usr/local/bin/docker-stackwait
 
