@@ -56,10 +56,16 @@ func getRegistryAuth(imageName string) string {
 	}
 
 	// Read Docker config
+	// Check for DOCKER_CONFIG_PATH env variable first, then fall back to default
 	configPath := filepath.Join(os.Getenv("HOME"), ".docker", "config.json")
+	if dockerConfigPath := os.Getenv("DOCKER_CONFIG_PATH"); dockerConfigPath != "" {
+		configPath = filepath.Join(dockerConfigPath, "config.json")
+		log.Printf("Using Docker config from DOCKER_CONFIG_PATH: %s", configPath)
+	}
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		log.Printf("Warning: could not read Docker config: %v", err)
+		log.Printf("Warning: could not read Docker config from %s: %v", configPath, err)
 		return ""
 	}
 

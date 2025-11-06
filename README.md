@@ -159,6 +159,11 @@ docker-stackwait mystack docker-compose.yml 10 5
 HEALTH_TIMEOUT_MINUTES=15 MAX_FAILED_TASKS=5 docker-stackwait mystack docker-compose.yml
 ```
 
+**With custom Docker config path (for private registries):**
+```bash
+DOCKER_CONFIG_PATH=/path/to/docker/config docker-stackwait mystack docker-compose.yml
+```
+
 ---
 
 ## Configuration
@@ -176,10 +181,11 @@ HEALTH_TIMEOUT_MINUTES=15 MAX_FAILED_TASKS=5 docker-stackwait mystack docker-com
 
 Environment variables take precedence over command-line arguments:
 
-| Variable                 | Description                                    | Default |
-|--------------------------|------------------------------------------------|---------|
-| `HEALTH_TIMEOUT_MINUTES` | Health check timeout in minutes                | 1       |
-| `MAX_FAILED_TASKS`       | Maximum number of failed tasks before rollback | 3       |
+| Variable                 | Description                                    | Default              |
+|--------------------------|------------------------------------------------|----------------------|
+| `HEALTH_TIMEOUT_MINUTES` | Health check timeout in minutes                | 1                    |
+| `MAX_FAILED_TASKS`       | Maximum number of failed tasks before rollback | 3                    |
+| `DOCKER_CONFIG_PATH`     | Path to Docker config directory (for registry auth) | `$HOME/.docker` |
 
 ---
 
