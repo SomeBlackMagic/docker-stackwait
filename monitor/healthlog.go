@@ -13,16 +13,18 @@ import (
 )
 
 type HealthLogStreamer struct {
-	cli       *client.Client
-	stackName string
-	lastLogs  map[string]int // containerID -> last processed log index
+	cli                *client.Client
+	stackName          string
+	lastLogs           map[string]int  // containerID -> last processed log index
+	existingContainers map[string]bool // containerID -> exists (to ignore initial logs)
 }
 
 func NewHealthLogStreamer(cli *client.Client, stackName string) *HealthLogStreamer {
 	return &HealthLogStreamer{
-		cli:       cli,
-		stackName: stackName,
-		lastLogs:  make(map[string]int),
+		cli:                cli,
+		stackName:          stackName,
+		lastLogs:           make(map[string]int),
+		existingContainers: make(map[string]bool),
 	}
 }
 
@@ -32,6 +34,12 @@ func (hls *HealthLogStreamer) StreamHealthLogs(ctx context.Context) {
 	defer ticker.Stop()
 
 	log.Println("Starting health log monitoring...")
+
+	// First scan: identify existing containers and skip their logs
+	hls.initExistingContainers(ctx)
+
+	// Check immediately on start
+	hls.checkHealthLogs(ctx)
 
 	for {
 		select {
@@ -44,31 +52,75 @@ func (hls *HealthLogStreamer) StreamHealthLogs(ctx context.Context) {
 	}
 }
 
-func (hls *HealthLogStreamer) checkHealthLogs(ctx context.Context) {
-	// Get all containers for the stack
+func (hls *HealthLogStreamer) initExistingContainers(ctx context.Context) {
+	// Get all containers
 	list, err := hls.cli.ContainerList(ctx, container.ListOptions{
-		Filters: filters.NewArgs(
-			filters.Arg("label", fmt.Sprintf("com.docker.stack.namespace=%s", hls.stackName)),
-		),
+		All: true,
 	})
 	if err != nil {
-		log.Printf("failed to list containers for health logs: %v", err)
 		return
 	}
 
 	for _, c := range list {
+		// Filter by service name prefix
+		serviceName := c.Labels["com.docker.swarm.service.name"]
+		if !strings.HasPrefix(serviceName, hls.stackName+"_") {
+			continue
+		}
+
+		// Mark as existing and skip to end of health logs
+		hls.existingContainers[c.ID] = true
+
+		// Inspect to get current health log count
+		inspect, err := hls.cli.ContainerInspect(ctx, c.ID)
+		if err == nil && inspect.State.Health != nil {
+			hls.lastLogs[c.ID] = len(inspect.State.Health.Log)
+		}
+	}
+
+	if len(hls.existingContainers) > 0 {
+		log.Printf("HealthLogStreamer: Found %d existing containers for stack %s (will not stream their logs)", len(hls.existingContainers), hls.stackName)
+	}
+}
+
+func (hls *HealthLogStreamer) checkHealthLogs(ctx context.Context) {
+	// Get all containers (including non-running ones)
+	list, err := hls.cli.ContainerList(ctx, container.ListOptions{
+		All: true, // Include all containers, not just running ones
+	})
+	if err != nil {
+		log.Printf("[HealthLog] failed to list containers: %v", err)
+		return
+	}
+
+	totalContainers := 0
+	containersWithHealth := 0
+	containersWithLogs := 0
+	totalNewLogs := 0
+
+	for _, c := range list {
+		// Filter by service name prefix (same approach as LogStreamer)
+		serviceName := c.Labels["com.docker.swarm.service.name"]
+		if !strings.HasPrefix(serviceName, hls.stackName+"_") {
+			continue
+		}
+
+		totalContainers++
 		// Inspect container to get health check info
 		inspect, err := hls.cli.ContainerInspect(ctx, c.ID)
 		if err != nil {
+			log.Printf("[HealthLog] failed to inspect container %s: %v", c.ID[:12], err)
 			continue
 		}
+
+		containerName := strings.TrimPrefix(inspect.Name, "/")
 
 		// Skip containers without health checks
 		if inspect.State.Health == nil {
 			continue
 		}
 
-		containerName := strings.TrimPrefix(inspect.Name, "/")
+		containersWithHealth++
 		health := inspect.State.Health
 
 		// Check if there are health check logs
@@ -76,13 +128,18 @@ func (hls *HealthLogStreamer) checkHealthLogs(ctx context.Context) {
 			continue
 		}
 
+		containersWithLogs++
+
 		// Get the last processed log index for this container
 		lastProcessedIndex := hls.lastLogs[c.ID]
 
 		// Process all new log entries for this container
+		newLogsCount := 0
 		for i := lastProcessedIndex; i < len(health.Log); i++ {
 			logEntry := health.Log[i]
 			hls.outputHealthLog(containerName, health.Status, logEntry)
+			newLogsCount++
+			totalNewLogs++
 		}
 
 		// Update the last processed index for this container
@@ -92,7 +149,8 @@ func (hls *HealthLogStreamer) checkHealthLogs(ctx context.Context) {
 
 func (hls *HealthLogStreamer) outputHealthLog(containerName, status string, logEntry *container.HealthcheckResult) {
 	// Format the timestamp
-	timestamp := logEntry.End.Format("15:04:05")
+	start := logEntry.Start.Format("2006-01-02T15:04:05")
+	end := logEntry.End.Format("2006-01-02T15:04:05")
 
 	// Prepare the output message
 	exitCodeStr := fmt.Sprintf("exit_code=%d", logEntry.ExitCode)
@@ -100,24 +158,23 @@ func (hls *HealthLogStreamer) outputHealthLog(containerName, status string, logE
 	// Trim and clean the output
 	output := strings.TrimSpace(logEntry.Output)
 
-	// For successful health checks, show a compact message
+	// Output health check result
 	if logEntry.ExitCode == 0 {
+		// Successful health check
 		if output != "" {
-			// Show first line of output if available
 			firstLine := strings.Split(output, "\n")[0]
 			if len(firstLine) > 100 {
 				firstLine = firstLine[:100] + "..."
 			}
-			fmt.Printf("[health:%s] %s | status=%s %s | %s\n",
-				containerName, timestamp, status, exitCodeStr, firstLine)
+			log.Printf("[HEALTH] %s | status=%s %s | start=%s end=%s | output: %s",
+				containerName, status, exitCodeStr, start, end, firstLine)
 		} else {
-			fmt.Printf("[health:%s] %s | status=%s %s\n",
-				containerName, timestamp, status, exitCodeStr)
+			log.Printf("[HEALTH] %s | status=%s %s | start=%s end=%s",
+				containerName, status, exitCodeStr, start, end)
 		}
 	} else {
-		// For failed health checks, show more detail
+		// Failed health check
 		if output != "" {
-			// Show multiple lines for errors, but limit to reasonable size
 			lines := strings.Split(output, "\n")
 			maxLines := 5
 			if len(lines) > maxLines {
@@ -127,11 +184,11 @@ func (hls *HealthLogStreamer) outputHealthLog(containerName, status string, logE
 				output = strings.Join(lines, "\n")
 			}
 
-			fmt.Printf("[health:%s] %s | status=%s %s | OUTPUT:\n%s\n",
-				containerName, timestamp, status, exitCodeStr, output)
+			log.Printf("[HEALTH] %s | status=%s %s | start=%s end=%s | OUTPUT:\n%s",
+				containerName, status, exitCodeStr, start, end, output)
 		} else {
-			fmt.Printf("[health:%s] %s | status=%s %s | (no output)\n",
-				containerName, timestamp, status, exitCodeStr)
+			log.Printf("[HEALTH] %s | status=%s %s | start=%s end=%s | (no output)",
+				containerName, status, exitCodeStr, start, end)
 		}
 	}
 }
