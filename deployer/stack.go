@@ -5,18 +5,16 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/docker/docker/client"
-
 	"stackwait/compose"
 )
 
 type StackDeployer struct {
-	cli                *client.Client
+	cli                DockerClient
 	stackName          string
 	MaxFailedTaskCount int // Maximum number of failed tasks before giving up
 }
 
-func NewStackDeployer(cli *client.Client, stackName string, maxFailedTaskCount int) *StackDeployer {
+func NewStackDeployer(cli DockerClient, stackName string, maxFailedTaskCount int) *StackDeployer {
 	if maxFailedTaskCount <= 0 {
 		maxFailedTaskCount = 3 // Default value
 	}

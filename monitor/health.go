@@ -10,7 +10,6 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/client"
 )
 
 const (
@@ -20,12 +19,12 @@ const (
 )
 
 type HealthMonitor struct {
-	cli                *client.Client
+	cli                DockerClient
 	stackName          string
 	MaxFailedTaskCount int // Maximum number of failed tasks before giving up
 }
 
-func NewHealthMonitor(cli *client.Client, stackName string, maxFailedTaskCount int) *HealthMonitor {
+func NewHealthMonitor(cli DockerClient, stackName string, maxFailedTaskCount int) *HealthMonitor {
 	if maxFailedTaskCount <= 0 {
 		maxFailedTaskCount = 3 // Default value
 	}
