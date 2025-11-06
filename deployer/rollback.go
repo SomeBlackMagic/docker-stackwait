@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
@@ -36,11 +37,26 @@ func (d *StackDeployer) CreateSnapshot(ctx context.Context) (*StackSnapshot, err
 
 	for _, svc := range services {
 		// Get tasks for this service
-		tasks, err := d.cli.TaskList(ctx, types.TaskListOptions{
-			Filters: filters.NewArgs(
-				filters.Arg("service", svc.ID),
-			),
-		})
+		// Retry with exponential backoff for API timeouts
+		var tasks []swarm.Task
+		var err error
+		maxRetries := 3
+		for retry := 0; retry < maxRetries; retry++ {
+			tasks, err = d.cli.TaskList(ctx, types.TaskListOptions{
+				Filters: filters.NewArgs(
+					filters.Arg("service", svc.ID),
+				),
+			})
+			if err == nil {
+				break
+			}
+			if retry < maxRetries-1 {
+				waitTime := time.Duration(retry+1) * time.Second
+				log.Printf("failed to list tasks for service %s (attempt %d/%d): %v, retrying in %v",
+					svc.Spec.Name, retry+1, maxRetries, err, waitTime)
+				time.Sleep(waitTime)
+			}
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to list tasks for service %s: %w", svc.Spec.Name, err)
 		}

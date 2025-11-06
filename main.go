@@ -130,6 +130,18 @@ func main() {
 		}
 	}()
 
+	// Start log streaming BEFORE deployment to catch all container events
+	logStreamer := monitor.NewLogStreamer(cli, stackName)
+	go logStreamer.StreamLogs(ctx)
+
+	// Start event streaming BEFORE deployment
+	eventStreamer := monitor.NewEventStreamer(cli, stackName)
+	go eventStreamer.StreamEvents(ctx)
+
+	// Start health log streaming BEFORE deployment
+	healthLogStreamer := monitor.NewHealthLogStreamer(cli, stackName)
+	go healthLogStreamer.StreamHealthLogs(ctx)
+
 	// Deploy stack
 	log.Printf("Deploying stack: %s", stackName)
 	if err := stackDeployer.Deploy(ctx, composeSpec); err != nil {
@@ -137,18 +149,6 @@ func main() {
 	}
 
 	fmt.Println("Stack deployed successfully. Starting health checks...")
-
-	// Start log streaming
-	logStreamer := monitor.NewLogStreamer(cli, stackName)
-	go logStreamer.StreamLogs(ctx)
-
-	// Start event streaming
-	eventStreamer := monitor.NewEventStreamer(cli, stackName)
-	go eventStreamer.StreamEvents(ctx)
-
-	// Start health log streaming
-	healthLogStreamer := monitor.NewHealthLogStreamer(cli, stackName)
-	go healthLogStreamer.StreamHealthLogs(ctx)
 
 	// Wait for services to be ready
 	healthMonitor := monitor.NewHealthMonitor(cli, stackName, maxFailedTaskCount)

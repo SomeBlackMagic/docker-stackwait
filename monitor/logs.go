@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 type LogStreamer struct {
@@ -26,75 +27,126 @@ func NewLogStreamer(cli *client.Client, stackName string) *LogStreamer {
 	}
 }
 
-// StreamLogs streams logs from all services in the stack
+// StreamLogs streams logs from all containers in the stack
 func (ls *LogStreamer) StreamLogs(ctx context.Context) {
-	// Small delay to let services start
-	time.Sleep(3 * time.Second)
+	// Continuously monitor for new containers and stream their logs
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 
-	// Get list of services for the stack
-	services, err := ls.cli.ServiceList(ctx, types.ServiceListOptions{
-		Filters: filters.NewArgs(
-			filters.Arg("label", fmt.Sprintf("com.docker.stack.namespace=%s", ls.stackName)),
-		),
+	trackedContainers := make(map[string]time.Time) // Track container ID -> creation time
+
+	// First scan: identify existing containers but don't stream their logs
+	containers, err := ls.cli.ContainerList(ctx, container.ListOptions{
+		All: false,
 	})
-	if err != nil {
-		log.Printf("failed to list services for stack %s: %v", ls.stackName, err)
-		return
+	if err == nil {
+		for _, c := range containers {
+			serviceName := c.Labels["com.docker.swarm.service.name"]
+			if strings.HasPrefix(serviceName, ls.stackName+"_") {
+				// Mark as tracked with creation time, but don't stream logs
+				trackedContainers[c.ID] = time.Unix(c.Created, 0)
+			}
+		}
+		log.Printf("LogStreamer: Found %d existing containers for stack %s (will not stream their logs)", len(trackedContainers), ls.stackName)
 	}
 
-	if len(services) == 0 {
-		log.Printf("no services found for stack %s", ls.stackName)
-		return
-	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Get list of ALL containers, then filter by service name prefix
+			containers, err := ls.cli.ContainerList(ctx, container.ListOptions{
+				All: false, // Only running containers
+			})
+			if err != nil {
+				log.Printf("failed to list containers for stack %s: %v", ls.stackName, err)
+				continue
+			}
 
-	log.Printf("Starting log streaming for %d services...", len(services))
+			// Filter containers by service name prefix
+			var stackContainers []types.Container
+			for _, c := range containers {
+				serviceName := c.Labels["com.docker.swarm.service.name"]
+				if strings.HasPrefix(serviceName, ls.stackName+"_") {
+					stackContainers = append(stackContainers, c)
+				}
+			}
 
-	// Stream logs for each service
-	for _, service := range services {
-		go ls.streamServiceLogs(ctx, service.ID, service.Spec.Name)
+			// Start streaming logs for new containers only
+			for _, c := range stackContainers {
+				if _, exists := trackedContainers[c.ID]; !exists {
+					// New container detected
+					trackedContainers[c.ID] = time.Unix(c.Created, 0)
+					serviceName := c.Labels["com.docker.swarm.service.name"]
+					containerName := c.Names[0]
+					if len(containerName) > 0 && containerName[0] == '/' {
+						containerName = containerName[1:]
+					}
+					log.Printf("Found new container: %s (service: %s)", containerName, serviceName)
+					go ls.streamContainerLogs(ctx, c.ID, serviceName, containerName)
+				}
+			}
+		}
 	}
 }
 
-func (ls *LogStreamer) streamServiceLogs(ctx context.Context, serviceID, serviceName string) {
-	log.Printf("Starting logs for service: %s", serviceName)
+func (ls *LogStreamer) streamContainerLogs(ctx context.Context, containerID, serviceName, containerName string) {
+	// Get container creation time
+	inspect, err := ls.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		log.Printf("failed to inspect container %s: %v", containerName, err)
+		return
+	}
 
 	opts := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     true,
-		Tail:       "0", // Only show new logs
+		Since:      inspect.Created, // Show logs from container creation time
 		Timestamps: false,
 	}
 
-	reader, err := ls.cli.ServiceLogs(ctx, serviceID, opts)
+	reader, err := ls.cli.ContainerLogs(ctx, containerID, opts)
 	if err != nil {
-		log.Printf("failed to get logs for service %s: %v", serviceName, err)
+		log.Printf("failed to get logs for container %s: %v", containerName, err)
 		return
 	}
 	defer reader.Close()
 
-	// Create a scanner to read logs line by line
-	scanner := bufio.NewScanner(reader)
+	// Create pipe readers for stdout and stderr
+	stdoutReader, stdoutWriter := io.Pipe()
+	stderrReader, stderrWriter := io.Pipe()
+
+	// Demultiplex Docker stream in background
+	go func() {
+		defer stdoutWriter.Close()
+		defer stderrWriter.Close()
+		_, err := stdcopy.StdCopy(stdoutWriter, stderrWriter, reader)
+		if err != nil && err != io.EOF && ctx.Err() == nil {
+			log.Printf("stdcopy error for container %s: %v", containerName, err)
+		}
+	}()
+
+	// Stream stdout
+	go ls.streamPipe(ctx, stdoutReader, serviceName, "stdout")
+
+	// Stream stderr
+	ls.streamPipe(ctx, stderrReader, serviceName, "stderr")
+}
+
+func (ls *LogStreamer) streamPipe(ctx context.Context, r io.Reader, serviceName, streamType string) {
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			log.Printf("Stopping logs for service: %s", serviceName)
 			return
 		default:
-			line := scanner.Text()
+			line := strings.TrimSpace(scanner.Text())
 			if line != "" {
-				// Docker service logs are prefixed with 8 bytes header
-				// Skip the header if present
-				if len(line) > 8 {
-					line = line[8:]
-				}
 				fmt.Printf("[logs:%s] %s\n", serviceName, line)
 			}
 		}
-	}
-
-	if err := scanner.Err(); err != nil && ctx.Err() == nil {
-		log.Printf("scanner error for service %s: %v", serviceName, err)
 	}
 }
 

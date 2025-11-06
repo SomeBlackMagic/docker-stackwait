@@ -61,12 +61,26 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 		log.Printf("Updating service: %s", fullName)
 
 		// Get current tasks before update to track recreation
-		oldTasks, err := d.cli.TaskList(ctx, types.TaskListOptions{
-			Filters: filters.NewArgs(
-				filters.Arg("service", existing.ID),
-				filters.Arg("desired-state", "running"),
-			),
-		})
+		// Retry with exponential backoff for API timeouts
+		var oldTasks []swarm.Task
+		maxRetries := 3
+		for retry := 0; retry < maxRetries; retry++ {
+			oldTasks, err = d.cli.TaskList(ctx, types.TaskListOptions{
+				Filters: filters.NewArgs(
+					filters.Arg("service", existing.ID),
+					filters.Arg("desired-state", "running"),
+				),
+			})
+			if err == nil {
+				break
+			}
+			if retry < maxRetries-1 {
+				waitTime := time.Duration(retry+1) * time.Second
+				log.Printf("failed to list old tasks (attempt %d/%d): %v, retrying in %v",
+					retry+1, maxRetries, err, waitTime)
+				time.Sleep(waitTime)
+			}
+		}
 		if err != nil {
 			return fmt.Errorf("failed to list old tasks: %w", err)
 		}
@@ -88,12 +102,25 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 		time.Sleep(1 * time.Second)
 
 		// Check if tasks were actually recreated by comparing task IDs
-		newTasks, err := d.cli.TaskList(ctx, types.TaskListOptions{
-			Filters: filters.NewArgs(
-				filters.Arg("service", existing.ID),
-				filters.Arg("desired-state", "running"),
-			),
-		})
+		// Retry with exponential backoff for API timeouts
+		var newTasks []swarm.Task
+		for retry := 0; retry < maxRetries; retry++ {
+			newTasks, err = d.cli.TaskList(ctx, types.TaskListOptions{
+				Filters: filters.NewArgs(
+					filters.Arg("service", existing.ID),
+					filters.Arg("desired-state", "running"),
+				),
+			})
+			if err == nil {
+				break
+			}
+			if retry < maxRetries-1 {
+				waitTime := time.Duration(retry+1) * time.Second
+				log.Printf("failed to list new tasks (attempt %d/%d): %v, retrying in %v",
+					retry+1, maxRetries, err, waitTime)
+				time.Sleep(waitTime)
+			}
+		}
 		if err != nil {
 			return fmt.Errorf("failed to list new tasks: %w", err)
 		}
@@ -178,11 +205,26 @@ func (d *StackDeployer) waitForServiceUpdate(ctx context.Context, serviceID stri
 		}
 
 		// Get current tasks
-		currentTasks, err := d.cli.TaskList(ctx, types.TaskListOptions{
-			Filters: filters.NewArgs(
-				filters.Arg("service", serviceID),
-			),
-		})
+		// Retry with exponential backoff for API timeouts
+		var currentTasks []swarm.Task
+		var err error
+		maxRetries := 3
+		for retry := 0; retry < maxRetries; retry++ {
+			currentTasks, err = d.cli.TaskList(ctx, types.TaskListOptions{
+				Filters: filters.NewArgs(
+					filters.Arg("service", serviceID),
+				),
+			})
+			if err == nil {
+				break
+			}
+			if retry < maxRetries-1 {
+				waitTime := time.Duration(retry+1) * time.Second
+				log.Printf("failed to list tasks (attempt %d/%d): %v, retrying in %v",
+					retry+1, maxRetries, err, waitTime)
+				time.Sleep(waitTime)
+			}
+		}
 		if err != nil {
 			return fmt.Errorf("failed to list tasks: %w", err)
 		}
@@ -201,7 +243,8 @@ func (d *StackDeployer) waitForServiceUpdate(ctx context.Context, serviceID stri
 					taskStates = append(taskStates, fmt.Sprintf("NEW-%s:%s", task.ID[:12], task.Status.State))
 				}
 			}
-			log.Printf("Task status: %d old, %d new. States: %v", oldTaskCount, newTaskCount, taskStates)
+			// TODO migrate to debug
+			// log.Printf("Task status: %d old, %d new. States: %v", oldTaskCount, newTaskCount, taskStates)
 			lastStatusLog = time.Now()
 		}
 
@@ -213,12 +256,18 @@ func (d *StackDeployer) waitForServiceUpdate(ctx context.Context, serviceID stri
 			}
 
 			// Check if new task failed or completed abnormally
-			// Tasks in 'complete' state with DesiredState=shutdown are tasks that were replaced
-			// This happens when healthcheck fails
+			// Skip tasks that completed successfully (exit code 0, no error)
 			isFailed := task.Status.State == swarm.TaskStateFailed ||
 				task.Status.State == swarm.TaskStateRejected ||
-				(task.Status.State == swarm.TaskStateShutdown && task.Status.Err != "") ||
-				(task.Status.State == swarm.TaskStateComplete && task.DesiredState == swarm.TaskStateShutdown)
+				(task.Status.State == swarm.TaskStateShutdown && task.Status.Err != "")
+
+			// For complete state, only count as failed if there's an error or non-zero exit code
+			if task.Status.State == swarm.TaskStateComplete && task.DesiredState == swarm.TaskStateShutdown {
+				// This is a replaced task - only fail if there's evidence of actual failure
+				if task.Status.Err != "" || task.Status.ContainerStatus.ExitCode != 0 {
+					isFailed = true
+				}
+			}
 
 			if isFailed {
 				// Log each failed task once
@@ -236,11 +285,6 @@ func (d *StackDeployer) waitForServiceUpdate(ctx context.Context, serviceID stri
 
 					if task.Status.ContainerStatus.ExitCode != 0 {
 						log.Printf("  Container exit code: %d", task.Status.ContainerStatus.ExitCode)
-					}
-
-					// Explain why task is considered failed
-					if task.Status.State == swarm.TaskStateComplete && task.DesiredState == swarm.TaskStateShutdown {
-						log.Printf("  Task was shutdown and replaced (likely healthcheck failure)")
 					}
 				}
 

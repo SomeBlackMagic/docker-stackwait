@@ -76,13 +76,28 @@ func (m *HealthMonitor) WaitHealthy(ctx context.Context) bool {
 		// Check containers for each service
 		for _, svc := range services {
 			// Get ALL tasks for this service (not just desired-state=running)
-			allTasks, err := m.cli.TaskList(ctx, types.TaskListOptions{
-				Filters: filters.NewArgs(
-					filters.Arg("service", svc.ID),
-				),
-			})
+			// Retry with exponential backoff for API timeouts
+			var allTasks []swarm.Task
+			var err error
+			maxRetries := 3
+			for retry := 0; retry < maxRetries; retry++ {
+				allTasks, err = m.cli.TaskList(ctx, types.TaskListOptions{
+					Filters: filters.NewArgs(
+						filters.Arg("service", svc.ID),
+					),
+				})
+				if err == nil {
+					break
+				}
+				if retry < maxRetries-1 {
+					waitTime := time.Duration(retry+1) * time.Second
+					log.Printf("failed to list tasks for service %s (attempt %d/%d): %v, retrying in %v",
+						svc.Spec.Name, retry+1, maxRetries, err, waitTime)
+					time.Sleep(waitTime)
+				}
+			}
 			if err != nil {
-				log.Printf("failed to list tasks for service %s: %v", svc.Spec.Name, err)
+				log.Printf("ERROR: failed to list tasks for service %s: %v", svc.Spec.Name, err)
 				allRunning = false
 				continue
 			}
@@ -241,12 +256,27 @@ func (m *HealthMonitor) WaitServicesReady(ctx context.Context) error {
 		allReady := true
 
 		for _, svc := range services {
-			tasks, err := m.cli.TaskList(ctx, types.TaskListOptions{
-				Filters: filters.NewArgs(
-					filters.Arg("service", svc.ID),
-					filters.Arg("desired-state", "running"),
-				),
-			})
+			// Retry with exponential backoff for API timeouts
+			var tasks []swarm.Task
+			var err error
+			maxRetries := 3
+			for retry := 0; retry < maxRetries; retry++ {
+				tasks, err = m.cli.TaskList(ctx, types.TaskListOptions{
+					Filters: filters.NewArgs(
+						filters.Arg("service", svc.ID),
+						filters.Arg("desired-state", "running"),
+					),
+				})
+				if err == nil {
+					break
+				}
+				if retry < maxRetries-1 {
+					waitTime := time.Duration(retry+1) * time.Second
+					log.Printf("failed to list tasks for service %s (attempt %d/%d): %v, retrying in %v",
+						svc.Spec.Name, retry+1, maxRetries, err, waitTime)
+					time.Sleep(waitTime)
+				}
+			}
 			if err != nil {
 				return fmt.Errorf("failed to list tasks for service %s: %w", svc.Spec.Name, err)
 			}
@@ -303,11 +333,25 @@ func (m *HealthMonitor) GetServiceStatus(ctx context.Context, serviceName string
 	svc := services[0]
 
 	// Get tasks for the service
-	tasks, err := m.cli.TaskList(ctx, types.TaskListOptions{
-		Filters: filters.NewArgs(
-			filters.Arg("service", svc.ID),
-		),
-	})
+	// Retry with exponential backoff for API timeouts
+	var tasks []swarm.Task
+	maxRetries := 3
+	for retry := 0; retry < maxRetries; retry++ {
+		tasks, err = m.cli.TaskList(ctx, types.TaskListOptions{
+			Filters: filters.NewArgs(
+				filters.Arg("service", svc.ID),
+			),
+		})
+		if err == nil {
+			break
+		}
+		if retry < maxRetries-1 {
+			waitTime := time.Duration(retry+1) * time.Second
+			log.Printf("failed to list tasks for service %s (attempt %d/%d): %v, retrying in %v",
+				svc.Spec.Name, retry+1, maxRetries, err, waitTime)
+			time.Sleep(waitTime)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tasks: %w", err)
 	}
