@@ -31,27 +31,32 @@ func NewStackDeployer(cli *client.Client, stackName string, maxFailedTaskCount i
 func (d *StackDeployer) Deploy(ctx context.Context, composeFile *compose.ComposeFile) error {
 	log.Printf("Starting deployment of stack: %s", d.stackName)
 
-	// 1. Check for obsolete services and remove them
+	// 1. Remove exited containers from previous deployments
+	if err := d.RemoveExitedContainers(ctx); err != nil {
+		return fmt.Errorf("failed to remove exited containers: %w", err)
+	}
+
+	// 2. Check for obsolete services and remove them
 	if err := d.removeObsoleteServices(ctx, composeFile.Services); err != nil {
 		return fmt.Errorf("failed to remove obsolete services: %w", err)
 	}
 
-	// 2. Pull images
+	// 3. Pull images
 	if err := d.pullImages(ctx, composeFile.Services); err != nil {
 		return fmt.Errorf("failed to pull images: %w", err)
 	}
 
-	// 3. Create networks
+	// 4. Create networks
 	if err := d.createNetworks(ctx, composeFile.Networks); err != nil {
 		return fmt.Errorf("failed to create networks: %w", err)
 	}
 
-	// 4. Create volumes
+	// 5. Create volumes
 	if err := d.createVolumes(ctx, composeFile.Volumes); err != nil {
 		return fmt.Errorf("failed to create volumes: %w", err)
 	}
 
-	// 5. Create/update services
+	// 6. Create/update services
 	if err := d.deployServices(ctx, composeFile.Services); err != nil {
 		return fmt.Errorf("failed to deploy services: %w", err)
 	}
