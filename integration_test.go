@@ -13,6 +13,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 )
 
@@ -242,7 +243,7 @@ func cleanupStack(t *testing.T, stackName string) {
 	time.Sleep(5 * time.Second)
 
 	// Remove networks
-	networks, err := cli.NetworkList(ctx, types.NetworkListOptions{Filters: filter})
+	networks, err := cli.NetworkList(ctx, network.ListOptions{Filters: filter})
 	if err != nil {
 		t.Logf("Warning: Failed to list networks: %v", err)
 		return

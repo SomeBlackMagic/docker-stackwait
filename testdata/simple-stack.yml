@@ -4,7 +4,7 @@ services:
   nginx:
     image: nginx:1.25-alpine
     ports:
-      - "8080:80"
+      - "9090:80"
     deploy:
       replicas: 1
       update_config:
