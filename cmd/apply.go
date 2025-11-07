@@ -10,9 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/filters"
+	dockerswarm "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 
 	"stackman/internal/compose"
+	"stackman/internal/health"
 	"stackman/internal/snapshot"
 	"stackman/internal/swarm"
 )
@@ -141,15 +145,144 @@ func runApply(stackName, composeFile string, opts *ApplyOptions) error {
 
 	// Deploy stack
 	log.Printf("Deploying stack: %s", stackName)
-	_, err = stackDeployer.Deploy(ctx, composeSpec)
+	deployResult, err := stackDeployer.Deploy(ctx, composeSpec)
 	if err != nil {
 		return fmt.Errorf("failed to deploy stack: %w", err)
 	}
 
 	fmt.Println("Stack deployed successfully.")
 
+	// If --no-wait, exit now
+	if opts.NoWait {
+		deploymentComplete <- true
+		return nil
+	}
+
+	// Wait for services to become healthy
+	if len(deployResult.UpdatedServices) > 0 {
+		log.Printf("Waiting for %d service(s) to become healthy...", len(deployResult.UpdatedServices))
+
+		// Wait for service update to complete
+		if err := waitForServiceUpdates(ctx, cli, deployResult.UpdatedServices); err != nil {
+			log.Printf("Service update failed: %v", err)
+			snapshot.Rollback(context.Background(), stackDeployer, snap)
+			return err
+		}
+
+		// Wait for tasks to become healthy
+		healthCtx, healthCancel := context.WithTimeout(ctx, opts.Timeout)
+		defer healthCancel()
+
+		if err := waitForAllTasksHealthy(healthCtx, cli, stackName, deployResult.UpdatedServices); err != nil {
+			log.Printf("Health check failed: %v", err)
+			snapshot.Rollback(context.Background(), stackDeployer, snap)
+			return err
+		}
+
+		log.Println("All services are healthy!")
+	} else {
+		log.Println("No services were changed during this deployment")
+	}
+
 	// Mark deployment as successful
 	deploymentComplete <- true
 
 	return nil
+}
+
+// waitForServiceUpdates waits for all service updates to complete
+func waitForServiceUpdates(ctx context.Context, cli *client.Client, services []swarm.ServiceUpdateResult) error {
+	for _, svc := range services {
+		monitor := health.NewServiceUpdateMonitor(cli, svc.ServiceID, svc.ServiceName)
+		if err := monitor.WaitForUpdateComplete(ctx); err != nil {
+			return fmt.Errorf("service %s update failed: %w", svc.ServiceName, err)
+		}
+		log.Printf("✅ Service %s update completed", svc.ServiceName)
+	}
+	return nil
+}
+
+// waitForAllTasksHealthy waits for all tasks of updated services to become healthy
+func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName string, updatedServices []swarm.ServiceUpdateResult) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	startTime := time.Now()
+
+	for {
+		select {
+		case <-ctx.Done():
+			elapsed := time.Since(startTime).Round(time.Second)
+			return fmt.Errorf("timeout after %v waiting for services to become healthy", elapsed)
+
+		case <-ticker.C:
+			allHealthy := true
+			unhealthyTasks := []string{}
+
+			for _, svc := range updatedServices {
+				filter := filters.NewArgs()
+				filter.Add("service", svc.ServiceID)
+				filter.Add("desired-state", "running")
+
+				tasks, err := cli.TaskList(ctx, types.TaskListOptions{
+					Filters: filter,
+				})
+				if err != nil {
+					log.Printf("Failed to list tasks for service %s: %v", svc.ServiceName, err)
+					allHealthy = false
+					continue
+				}
+
+				serviceHealthy := false
+				for _, t := range tasks {
+					// Skip old tasks
+					if t.Version.Index < svc.Version.Index {
+						continue
+					}
+
+					// Check if task is running
+					if t.Status.State != dockerswarm.TaskStateRunning {
+						allHealthy = false
+						unhealthyTasks = append(unhealthyTasks, fmt.Sprintf("%s (state: %s)", svc.ServiceName, t.Status.State))
+						continue
+					}
+
+					// Check container health if available
+					if t.Status.ContainerStatus != nil && t.Status.ContainerStatus.ContainerID != "" {
+						containerInfo, err := cli.ContainerInspect(ctx, t.Status.ContainerStatus.ContainerID)
+						if err != nil {
+							log.Printf("Failed to inspect container for %s: %v", svc.ServiceName, err)
+							allHealthy = false
+							continue
+						}
+
+						// If health check is defined, wait for healthy status
+						if containerInfo.State.Health != nil {
+							if containerInfo.State.Health.Status != "healthy" {
+								allHealthy = false
+								unhealthyTasks = append(unhealthyTasks, fmt.Sprintf("%s (health: %s)", svc.ServiceName, containerInfo.State.Health.Status))
+							} else {
+								serviceHealthy = true
+							}
+						} else {
+							// No health check, running is enough
+							serviceHealthy = true
+						}
+					}
+				}
+
+				if !serviceHealthy {
+					allHealthy = false
+				}
+			}
+
+			if allHealthy {
+				return nil
+			}
+
+			if len(unhealthyTasks) > 0 {
+				log.Printf("Waiting for: %v", unhealthyTasks)
+			}
+		}
+	}
 }
