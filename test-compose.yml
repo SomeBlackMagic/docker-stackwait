@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./data:/data          # Relative path with ./
+      - data:/app/data        # Simple relative path
+      - /var/log:/logs        # Absolute path
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
+
+volumes:
+  data:
+    driver: local
+
+networks:
+  default:
+    driver: overlay

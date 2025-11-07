@@ -3,7 +3,10 @@ package plan
 import (
 	"context"
 
+	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
+
+	"stackman/internal/compose"
 )
 
 // Planner creates deployment plans by comparing current and desired state
@@ -53,12 +56,16 @@ func (p *Planner) planNetworks(current *CurrentState, desired *DesiredState) []N
 		if currentNet, exists := current.Networks[name]; exists {
 			// Network exists - check if update needed
 			// For now, we don't update networks (would require recreate)
+			driver := ""
+			if currentNet.Spec.DriverConfiguration != nil {
+				driver = currentNet.Spec.DriverConfiguration.Name
+			}
 			actions = append(actions, NetworkAction{
 				Name:      name,
 				Action:    ActionNone,
 				NetworkID: currentNet.ID,
-				Driver:    currentNet.Driver,
-				Labels:    currentNet.Labels,
+				Driver:    driver,
+				Labels:    currentNet.Spec.Labels,
 			})
 		} else {
 			// Network doesn't exist - create
@@ -144,7 +151,7 @@ func (p *Planner) planConfigs(current *CurrentState, desired *DesiredState) []Co
 				Name:   name,
 				Action: ActionCreate,
 				Labels: desiredCfg.Labels,
-				Data:   desiredCfg.Data,
+				// Data will be read from File later
 			})
 		}
 	}
@@ -184,7 +191,7 @@ func (p *Planner) planSecrets(current *CurrentState, desired *DesiredState) []Se
 				Name:   name,
 				Action: ActionCreate,
 				Labels: desiredSec.Labels,
-				Data:   desiredSec.Data,
+				// Data will be read from File later
 			})
 		}
 	}
@@ -269,8 +276,11 @@ func compareServices(current *swarm.Service, desired *compose.Service) []string 
 	// Compare replicas
 	if current.Spec.Mode.Replicated != nil && current.Spec.Mode.Replicated.Replicas != nil {
 		currentReplicas := *current.Spec.Mode.Replicated.Replicas
-		if desired.Deploy != nil && desired.Deploy.Replicas != currentReplicas {
-			changes = append(changes, "replicas")
+		if desired.Deploy != nil && desired.Deploy.Replicas != nil {
+			desiredReplicas := uint64(*desired.Deploy.Replicas)
+			if desiredReplicas != currentReplicas {
+				changes = append(changes, "replicas")
+			}
 		}
 	}
 

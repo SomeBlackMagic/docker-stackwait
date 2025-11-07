@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/docker/docker/client"
 )
 
 func TestNewMonitor(t *testing.T) {
