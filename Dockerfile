@@ -36,7 +36,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     GOARCH=${TARGETARCH:-$(go env GOARCH)} \
     go build \
       -v \
-      -o /workspace/docker-stackwait \
+      -o /workspace/stackman \
       -trimpath \
       -mod=readonly \
       -buildvcs=false \
@@ -54,9 +54,9 @@ FROM busybox
 COPY --from=curlimages/curl:8.7.1 /usr/bin/curl /usr/bin/curl
 
 # copy the binary (read/execute permissions are enough)
-COPY --from=build --chmod=0555 /workspace/docker-stackwait /usr/local/bin/docker-stackwait
+COPY --from=build --chmod=0555 /workspace/stackman /usr/local/bin/stackman
 
 # run as non-root (65532 = nobody in most base images)
 USER 65532:65532
 
-CMD ["/usr/local/bin/docker-stackwait"]
+CMD ["/usr/local/bin/stackman"]

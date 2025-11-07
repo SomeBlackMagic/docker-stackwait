@@ -113,17 +113,17 @@ jobs:
             docker pull "$IMAGE"
 
             CID=$(docker create "$IMAGE" true)
-            docker cp "$CID:/usr/local/bin/docker-stackwait" "artifacts/docker-stackwait-${arch}-linux"
+            docker cp "$CID:/usr/local/bin/stackman" "artifacts/stackman-${arch}-linux"
             docker rm "$CID"
 
-            sha256sum "artifacts/docker-stackwait-${arch}-linux" > "artifacts/docker-stackwait-${arch}.sha256"
+            sha256sum "artifacts/stackman-${arch}-linux" > "artifacts/stackman-${arch}.sha256"
           done
 
       - name: Upload build artifacts
         if: github.ref_type == 'tag'
         uses: actions/upload-artifact@v4
         with:
-          name: docker-stackwait-binaries
+          name: stackman-binaries
           path: artifacts/
 
       - name: Check release exists by tag
@@ -148,8 +148,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.rel.outputs.upload_url }}
-          asset_path: artifacts/docker-stackwait-amd64-linux
-          asset_name: docker-stackwait-amd64-linux
+          asset_path: artifacts/stackman-amd64-linux
+          asset_name: stackman-amd64-linux
           asset_content_type: application/octet-stream
 
       - name: Upload arm64 binary to release
@@ -159,6 +159,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.rel.outputs.upload_url }}
-          asset_path: artifacts/docker-stackwait-arm64-linux
-          asset_name: docker-stackwait-arm64-linux
+          asset_path: artifacts/stackman-arm64-linux
+          asset_name: stackman-arm64-linux
           asset_content_type: application/octet-stream

@@ -1,6 +1,6 @@
-# docker-stackwait
+# stackman
 
-`docker-stackwait` is a production-ready CLI utility written in Go that provides **zero-downtime deployments** for Docker Swarm stacks with intelligent health monitoring and automatic rollback capabilities.
+`stackman` is a production-ready CLI utility written in Go that provides **zero-downtime deployments** for Docker Swarm stacks with intelligent health monitoring and automatic rollback capabilities.
 
 ---
 
@@ -14,7 +14,7 @@ When deploying services to Docker Swarm, `docker stack deploy` returns immediate
 4. **CI/CD pipeline issues** - Pipelines report success even when services are broken
 5. **Downtime risk** - No automated way to prevent bad deployments from reaching production
 
-`docker-stackwait` solves these problems by:
+`stackman` solves these problems by:
 - **Waiting** for all services to deploy and pass health checks
 - **Monitoring** real-time service status, container health, and task failures
 - **Validating** that all containers become healthy before considering deployment successful
@@ -114,17 +114,17 @@ When deploying services to Docker Swarm, `docker stack deploy` returns immediate
 ### Download Pre-built Binary
 
 ```bash
-wget https://github.com/SomeBlackMagic/docker-stackwait/releases/latest/download/docker-stackwait-amd64-linux
-chmod +x docker-stackwait-amd64-linux
-mv docker-stackwait-amd64-linux /usr/local/bin/docker-stackwait
+wget https://github.com/SomeBlackMagic/stackman/releases/latest/download/stackman-amd64-linux
+chmod +x stackman-amd64-linux
+mv stackman-amd64-linux /usr/local/bin/stackman
 ```
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/SomeBlackMagic/docker-stackwait.git
-cd docker-stackwait
-go build -o docker-stackwait .
+git clone https://github.com/SomeBlackMagic/stackman.git
+cd stackman
+go build -o stackman .
 ```
 
 ---
@@ -134,34 +134,34 @@ go build -o docker-stackwait .
 ### Basic Usage
 
 ```bash
-docker-stackwait <stack-name> <compose-file> [health-timeout-minutes] [max-failed-tasks]
+stackman <stack-name> <compose-file> [health-timeout-minutes] [max-failed-tasks]
 ```
 
 ### Examples
 
 **Basic deployment:**
 ```bash
-docker-stackwait mystack docker-compose.yml
+stackman mystack docker-compose.yml
 ```
 
 **With custom health timeout (10 minutes):**
 ```bash
-docker-stackwait mystack docker-compose.yml 10
+stackman mystack docker-compose.yml 10
 ```
 
 **With custom timeout and max failed tasks:**
 ```bash
-docker-stackwait mystack docker-compose.yml 10 5
+stackman mystack docker-compose.yml 10 5
 ```
 
 **Using environment variables:**
 ```bash
-HEALTH_TIMEOUT_MINUTES=15 MAX_FAILED_TASKS=5 docker-stackwait mystack docker-compose.yml
+HEALTH_TIMEOUT_MINUTES=15 MAX_FAILED_TASKS=5 stackman mystack docker-compose.yml
 ```
 
 **With custom Docker config path (for private registries):**
 ```bash
-DOCKER_CONFIG_PATH=/path/to/docker/config docker-stackwait mystack docker-compose.yml
+DOCKER_CONFIG_PATH=/path/to/docker/config stackman mystack docker-compose.yml
 ```
 
 ---
@@ -313,7 +313,7 @@ Rollback completed successfully
 The application is organized into focused packages:
 
 ```
-docker-stackwait/
+stackman/
 ├── main.go              # Entry point, CLI argument parsing, orchestration
 ├── compose/             # Docker Compose file parsing and conversion
 │   ├── types.go         # Complete Compose file structure definitions
@@ -338,7 +338,7 @@ docker-stackwait/
 
 ## Docker Compose Support
 
-`docker-stackwait` includes a comprehensive Docker Compose parser that converts `docker-compose.yml` files to Docker Swarm service specifications.
+`stackman` includes a comprehensive Docker Compose parser that converts `docker-compose.yml` files to Docker Swarm service specifications.
 
 ### Supported Docker Compose Features
 
@@ -411,7 +411,7 @@ These fields remain in the type definitions for completeness and potential futur
 deploy:
   stage: deploy
   script:
-    - docker-stackwait production docker-compose.yml 10 5
+    - stackman production docker-compose.yml 10 5
   only:
     - main
 ```
@@ -420,10 +420,10 @@ deploy:
 
 ```bash
 # Deploy to green environment
-docker-stackwait green-stack docker-compose.yml
+stackman green-stack docker-compose.yml
 
 # If successful, switch traffic and deploy to blue
-docker-stackwait blue-stack docker-compose.yml
+stackman blue-stack docker-compose.yml
 ```
 
 ### Canary Deployments
@@ -442,7 +442,7 @@ services:
 
 ```bash
 # Deploy canary
-VERSION=v2.0 docker-stackwait mystack docker-compose.yml
+VERSION=v2.0 stackman mystack docker-compose.yml
 
 # If healthy, scale up
 docker service scale mystack_web=10
@@ -459,7 +459,7 @@ COMPOSE_FILE="docker-compose.yml"
 
 for ENV in "${ENVIRONMENTS[@]}"; do
   echo "Deploying to $ENV..."
-  if docker-stackwait "${ENV}-stack" "$COMPOSE_FILE" 15 3; then
+  if stackman "${ENV}-stack" "$COMPOSE_FILE" 15 3; then
     echo "✓ $ENV deployment successful"
   else
     echo "✗ $ENV deployment failed, stopping"
@@ -477,7 +477,7 @@ done
 **Solution**: Increase health timeout or adjust health check configuration
 ```bash
 # Increase timeout to 15 minutes
-docker-stackwait mystack docker-compose.yml 15
+stackman mystack docker-compose.yml 15
 
 # Or adjust healthcheck in compose file
 healthcheck:
@@ -503,7 +503,7 @@ docker exec <container-id> curl -f http://localhost/health
 **Solution**: Fix health checks or deploy a known-good version first
 ```bash
 # Deploy last known good version
-docker-stackwait mystack docker-compose.good.yml
+stackman mystack docker-compose.good.yml
 ```
 
 ### Issue: "No services found" error
@@ -528,8 +528,8 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ```bash
 # Clone repository
-git clone https://github.com/SomeBlackMagic/docker-stackwait.git
-cd docker-stackwait
+git clone https://github.com/SomeBlackMagic/stackman.git
+cd stackman
 
 # Install dependencies
 go mod download
@@ -538,7 +538,7 @@ go mod download
 go test ./...
 
 # Build
-go build -o docker-stackwait .
+go build -o stackman .
 ```
 
 ---
