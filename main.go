@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"stackman/parts"
+	"stackman/internal/snapshot"
 	"strconv"
 	"sync"
 	"syscall"
@@ -14,12 +14,12 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/swarm"
+	dockerswarm "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 
-	"stackman/compose"
-	"stackman/deployer"
-	"stackman/task"
+	"stackman/internal/compose"
+	"stackman/internal/health"
+	"stackman/internal/swarm"
 )
 
 // -----------------------------------
@@ -104,10 +104,10 @@ func main() {
 	}
 
 	// Create deployer
-	stackDeployer := deployer.NewStackDeployer(cli, stackName, maxFailedTaskCount)
+	stackDeployer := swarm.NewStackDeployer(cli, stackName, maxFailedTaskCount)
 
 	// Create snapshot before deployment for rollback
-	snapshot := parts.CreateSnapshot(ctx, stackDeployer)
+	snap := snapshot.CreateSnapshot(ctx, stackDeployer)
 
 	// Track deployment state for signal handler
 	deploymentComplete := make(chan bool, 1)
@@ -125,7 +125,7 @@ func main() {
 		default:
 			// Deployment in progress, rollback
 			log.Println("Deployment interrupted, initiating rollback...")
-			parts.Rollback(context.Background(), stackDeployer, snapshot)
+			snapshot.Rollback(context.Background(), stackDeployer, snap)
 			os.Exit(130) // Standard exit code for SIGINT
 		}
 	}()
@@ -168,11 +168,11 @@ func main() {
 			wg.Add(1)
 
 			// Start service update monitor for each service
-			go func(s deployer.ServiceUpdateResult) {
+			go func(s swarm.ServiceUpdateResult) {
 				defer wg.Done()
 
 				// Monitor service update status
-				updateMonitor := task.NewServiceUpdateMonitor(cli, s.ServiceID, s.ServiceName)
+				updateMonitor := health.NewServiceUpdateMonitor(cli, s.ServiceID, s.ServiceName)
 				if err := updateMonitor.WaitForUpdateComplete(ctx); err != nil {
 					log.Printf("[ServiceUpdateMonitor] ❌ Service %s update failed: %v", s.ServiceName, err)
 					updateErrors <- fmt.Errorf("service %s update failed: %w", s.ServiceName, err)
@@ -183,11 +183,11 @@ func main() {
 			}(svc)
 
 			// Create dedicated watcher filtered for this service and version
-			serviceWatcher := task.NewServiceWatcher(cli, stackName, svc.ServiceID, svc.Version.Index)
+			serviceWatcher := health.NewServiceWatcher(cli, stackName, svc.ServiceID, svc.Version.Index)
 			serviceEventsChan := serviceWatcher.Subscribe()
 
 			// Start watcher in background
-			go func(w *task.Watcher, svcName string) {
+			go func(w *health.Watcher, svcName string) {
 				if err := w.Start(ctx); err != nil && err != context.Canceled {
 					log.Printf("[TaskWatcher] Error for service %s: %v", svcName, err)
 				}
@@ -209,7 +209,7 @@ func main() {
 		for err := range updateErrors {
 			if err != nil {
 				log.Printf("ERROR: %v", err)
-				parts.Rollback(ctx, stackDeployer, snapshot)
+				snapshot.Rollback(ctx, stackDeployer, snap)
 				os.Exit(1)
 			}
 		}
@@ -226,7 +226,7 @@ func main() {
 		// Wait for all tasks to report healthy status
 		if err := waitForAllTasksHealthy(healthCtx, cli, stackName, deployResult.UpdatedServices); err != nil {
 			log.Printf("ERROR: %v", err)
-			parts.Rollback(ctx, stackDeployer, snapshot)
+			snapshot.Rollback(ctx, stackDeployer, snap)
 			os.Exit(1)
 		}
 
@@ -244,7 +244,7 @@ func main() {
 }
 
 // waitForAllTasksHealthy waits for all tasks of updated services to become healthy
-func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName string, updatedServices []deployer.ServiceUpdateResult) error {
+func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName string, updatedServices []swarm.ServiceUpdateResult) error {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -266,7 +266,7 @@ func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName s
 				if err == nil {
 					hasHealthy := false
 					for _, t := range tasks {
-						if t.Version.Index >= svc.Version.Index && t.Status.State == swarm.TaskStateRunning {
+						if t.Version.Index >= svc.Version.Index && t.Status.State == dockerswarm.TaskStateRunning {
 							if t.Status.ContainerStatus != nil && t.Status.ContainerStatus.ContainerID != "" {
 								containerInfo, err := cli.ContainerInspect(context.Background(), t.Status.ContainerStatus.ContainerID)
 								if err == nil {
@@ -319,23 +319,23 @@ func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName s
 					}
 
 					// Log failed/shutdown tasks but don't fail immediately (Docker Swarm may restart)
-					if t.Status.State == swarm.TaskStateFailed ||
-					   t.Status.State == swarm.TaskStateShutdown ||
-					   t.Status.State == swarm.TaskStateRejected {
+					if t.Status.State == dockerswarm.TaskStateFailed ||
+						t.Status.State == dockerswarm.TaskStateShutdown ||
+						t.Status.State == dockerswarm.TaskStateRejected {
 						log.Printf("[HealthCheck] ⚠️  Task %s (%s) is %s: %s (waiting for restart)",
 							t.ID[:12], svc.ServiceName, t.Status.State, t.Status.Message)
 						continue
 					}
 
 					// Only check tasks with desired-state=running
-					if t.DesiredState != swarm.TaskStateRunning {
+					if t.DesiredState != dockerswarm.TaskStateRunning {
 						continue
 					}
 
 					hasRunningTask = true
 
 					// Check if task is running
-					if t.Status.State != swarm.TaskStateRunning {
+					if t.Status.State != dockerswarm.TaskStateRunning {
 						allHealthy = false
 						unhealthyTasks = append(unhealthyTasks, fmt.Sprintf("%s/%s (state: %s)", svc.ServiceName, t.ID[:12], t.Status.State))
 						log.Printf("[HealthCheck] ⏳ Task %s (%s) is %s", t.ID[:12], svc.ServiceName, t.Status.State)
@@ -404,11 +404,11 @@ func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName s
 }
 
 // monitorServiceTasks creates TaskMonitor for each task in the service and monitors them
-func monitorServiceTasks(ctx context.Context, cli *client.Client, svc deployer.ServiceUpdateResult, eventChan <-chan task.Event) {
+func monitorServiceTasks(ctx context.Context, cli *client.Client, svc swarm.ServiceUpdateResult, eventChan <-chan health.Event) {
 	log.Printf("[ServiceMonitor] Started monitoring service: %s (version: %d)", svc.ServiceName, svc.Version.Index)
 
 	// Track active task monitors
-	taskMonitors := make(map[string]*task.Monitor)
+	taskMonitors := make(map[string]*health.Monitor)
 	var mu sync.Mutex
 
 	// Create cleanup goroutine
@@ -439,15 +439,15 @@ func monitorServiceTasks(ctx context.Context, cli *client.Client, svc deployer.S
 			monitor, exists := taskMonitors[taskID]
 
 			// Create new monitor for new tasks
-			if !exists && event.Type == task.EventTypeCreated {
+			if !exists && event.Type == health.EventTypeCreated {
 				log.Printf("[ServiceMonitor] New task detected: %s for service %s",
 					taskID[:12], svc.ServiceName)
 
-				monitor = task.NewMonitor(cli, taskID, svc.ServiceID, svc.ServiceName)
+				monitor = health.NewMonitor(cli, taskID, svc.ServiceID, svc.ServiceName)
 				taskMonitors[taskID] = monitor
 
 				// Start monitor in background
-				go func(m *task.Monitor) {
+				go func(m *health.Monitor) {
 					if err := m.Start(ctx); err != nil && err != context.Canceled {
 						log.Printf("[ServiceMonitor] Monitor error for task %s: %v", taskID[:12], err)
 					}
@@ -469,13 +469,13 @@ func monitorServiceTasks(ctx context.Context, cli *client.Client, svc deployer.S
 
 			// Log important events at service level
 			switch event.Type {
-			case task.EventTypeCreated:
+			case health.EventTypeCreated:
 				log.Printf("[ServiceMonitor] 🆕 Service %s: Task %s created",
 					svc.ServiceName, taskID[:12])
-			case task.EventTypeFailed:
+			case health.EventTypeFailed:
 				log.Printf("[ServiceMonitor] ❌ Service %s: Task %s failed - %s",
 					svc.ServiceName, taskID[:12], event.Message)
-			case task.EventTypeHealthy:
+			case health.EventTypeHealthy:
 				log.Printf("[ServiceMonitor] 💚 Service %s: Task %s is healthy",
 					svc.ServiceName, taskID[:12])
 			}
@@ -485,7 +485,7 @@ func monitorServiceTasks(ctx context.Context, cli *client.Client, svc deployer.S
 
 // logTaskEvents logs task lifecycle events from TaskWatcher
 // This function demonstrates the new task event system in action
-func logTaskEvents(ctx context.Context, eventChan <-chan task.Event) {
+func logTaskEvents(ctx context.Context, eventChan <-chan health.Event) {
 	log.Println("[TaskWatcher] Started logging task events")
 
 	for {
@@ -527,23 +527,23 @@ func logTaskEvents(ctx context.Context, eventChan <-chan task.Event) {
 }
 
 // getEventPrefix returns a visual prefix for different event types
-func getEventPrefix(eventType task.EventType) string {
+func getEventPrefix(eventType health.EventType) string {
 	switch eventType {
-	case task.EventTypeCreated:
+	case health.EventTypeCreated:
 		return "🆕"
-	case task.EventTypeStarted:
+	case health.EventTypeStarted:
 		return "▶️ "
-	case task.EventTypeRunning:
+	case health.EventTypeRunning:
 		return "✅"
-	case task.EventTypeHealthy:
+	case health.EventTypeHealthy:
 		return "💚"
-	case task.EventTypeUnhealthy:
+	case health.EventTypeUnhealthy:
 		return "💔"
-	case task.EventTypeFailed:
+	case health.EventTypeFailed:
 		return "❌"
-	case task.EventTypeCompleted:
+	case health.EventTypeCompleted:
 		return "🏁"
-	case task.EventTypeShutdown:
+	case health.EventTypeShutdown:
 		return "🛑"
 	default:
 		return "ℹ️ "

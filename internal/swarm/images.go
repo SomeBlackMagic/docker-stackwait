@@ -1,4 +1,4 @@
-package deployer
+package swarm
 
 import (
 	"encoding/base64"

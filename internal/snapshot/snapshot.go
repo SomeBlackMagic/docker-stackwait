@@ -1,4 +1,4 @@
-package parts
+package snapshot
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 )
 
 // createSnapshot creates a snapshot of current stack state before deployment
-func CreateSnapshot(ctx context.Context, stackDeployer *deployer.StackDeployer) *deployer.StackSnapshot {
+func CreateSnapshot(ctx context.Context, stackDeployer *swarm.StackDeployer) *swarm.StackSnapshot {
 	log.Println("Creating snapshot of current stack state...")
 	snapshot, err := stackDeployer.CreateSnapshot(ctx)
 	if err != nil {
@@ -22,7 +22,7 @@ func CreateSnapshot(ctx context.Context, stackDeployer *deployer.StackDeployer) 
 }
 
 // rollback restores the stack to a previous snapshot state
-func Rollback(ctx context.Context, stackDeployer *deployer.StackDeployer, snapshot *deployer.StackSnapshot) {
+func Rollback(ctx context.Context, stackDeployer *swarm.StackDeployer, snapshot *swarm.StackSnapshot) {
 	if snapshot == nil || len(snapshot.Services) == 0 {
 		log.Println("No snapshot available, cannot rollback")
 		return

@@ -19,8 +19,8 @@ import (
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 
-	"stackman/compose"
-	"stackman/deployer"
+	"stackman/internal/compose"
+	"stackman/internal/swarm"
 	"stackman/monitor"
 )
 
