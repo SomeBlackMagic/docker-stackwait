@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -160,26 +161,84 @@ func runApply(stackName, composeFile string, opts *ApplyOptions) error {
 
 	// Wait for services to become healthy
 	if len(deployResult.UpdatedServices) > 0 {
-		log.Printf("Waiting for %d service(s) to become healthy...", len(deployResult.UpdatedServices))
-
-		// Wait for service update to complete
-		if err := waitForServiceUpdates(ctx, cli, deployResult.UpdatedServices); err != nil {
-			log.Printf("Service update failed: %v", err)
-			snapshot.Rollback(context.Background(), stackDeployer, snap)
-			return err
+		log.Printf("Services updated/created: %d", len(deployResult.UpdatedServices))
+		for _, svc := range deployResult.UpdatedServices {
+			log.Printf("  - %s (version: %d)", svc.ServiceName, svc.Version.Index)
 		}
 
-		// Wait for tasks to become healthy
+		// Start event-driven monitoring with watchers
+		log.Println("[TaskMonitor] Starting watchers and monitors for updated services...")
+
+		var wg sync.WaitGroup
+		updateErrors := make(chan error, len(deployResult.UpdatedServices))
+
+		for _, svc := range deployResult.UpdatedServices {
+			wg.Add(1)
+
+			// Start service update monitor for each service
+			go func(s swarm.ServiceUpdateResult) {
+				defer wg.Done()
+
+				// Monitor service update status
+				updateMonitor := health.NewServiceUpdateMonitor(cli, s.ServiceID, s.ServiceName)
+				if err := updateMonitor.WaitForUpdateComplete(ctx); err != nil {
+					log.Printf("[ServiceUpdateMonitor] ❌ Service %s update failed: %v", s.ServiceName, err)
+					updateErrors <- fmt.Errorf("service %s update failed: %w", s.ServiceName, err)
+					return
+				}
+
+				log.Printf("[ServiceUpdateMonitor] ✅ Service %s update completed successfully", s.ServiceName)
+			}(svc)
+
+			// Create dedicated watcher filtered for this service and version
+			serviceWatcher := health.NewServiceWatcher(cli, stackName, svc.ServiceID, svc.Version.Index)
+			serviceEventsChan := serviceWatcher.Subscribe()
+
+			// Start watcher in background
+			go func(w *health.Watcher, svcName string) {
+				if err := w.Start(ctx); err != nil && err != context.Canceled {
+					log.Printf("[TaskWatcher] Error for service %s: %v", svcName, err)
+				}
+			}(serviceWatcher, svc.ServiceName)
+
+			// Start monitor for this service
+			go monitorServiceTasks(ctx, cli, svc, serviceEventsChan)
+
+			log.Printf("[TaskMonitor] Started watcher for service %s version %d+", svc.ServiceName, svc.Version.Index)
+		}
+
+		// Wait for all service updates to complete
+		go func() {
+			wg.Wait()
+			close(updateErrors)
+		}()
+
+		// Check if any updates failed
+		for err := range updateErrors {
+			if err != nil {
+				log.Printf("ERROR: %v", err)
+				snapshot.Rollback(ctx, stackDeployer, snap)
+				return err
+			}
+		}
+
+		log.Println("[ServiceUpdateMonitor] All service updates completed successfully")
+
+		// Now wait for all tasks to become healthy
+		log.Println("[TaskMonitor] Waiting for all tasks to become healthy...")
+
+		// Create health check context with timeout
 		healthCtx, healthCancel := context.WithTimeout(ctx, opts.Timeout)
 		defer healthCancel()
 
+		// Wait for all tasks to report healthy status
 		if err := waitForAllTasksHealthy(healthCtx, cli, stackName, deployResult.UpdatedServices); err != nil {
-			log.Printf("Health check failed: %v", err)
-			snapshot.Rollback(context.Background(), stackDeployer, snap)
+			log.Printf("ERROR: %v", err)
+			snapshot.Rollback(ctx, stackDeployer, snap)
 			return err
 		}
 
-		log.Println("All services are healthy!")
+		log.Println("[TaskMonitor] All tasks are healthy")
 	} else {
 		log.Println("No services were changed during this deployment")
 	}
@@ -190,16 +249,90 @@ func runApply(stackName, composeFile string, opts *ApplyOptions) error {
 	return nil
 }
 
-// waitForServiceUpdates waits for all service updates to complete
-func waitForServiceUpdates(ctx context.Context, cli *client.Client, services []swarm.ServiceUpdateResult) error {
-	for _, svc := range services {
-		monitor := health.NewServiceUpdateMonitor(cli, svc.ServiceID, svc.ServiceName)
-		if err := monitor.WaitForUpdateComplete(ctx); err != nil {
-			return fmt.Errorf("service %s update failed: %w", svc.ServiceName, err)
+// monitorServiceTasks monitors task lifecycle events for a service and logs them
+func monitorServiceTasks(ctx context.Context, cli *client.Client, svc swarm.ServiceUpdateResult, eventChan <-chan health.Event) {
+	log.Printf("[ServiceMonitor] Started monitoring service: %s (version: %d)", svc.ServiceName, svc.Version.Index)
+
+	// Track active task monitors
+	taskMonitors := make(map[string]*health.Monitor)
+	var mu sync.Mutex
+
+	// Create cleanup goroutine
+	defer func() {
+		mu.Lock()
+		for taskID, monitor := range taskMonitors {
+			log.Printf("[ServiceMonitor] Stopping monitor for task %s", taskID[:12])
+			monitor.Stop()
 		}
-		log.Printf("✅ Service %s update completed", svc.ServiceName)
+		mu.Unlock()
+		log.Printf("[ServiceMonitor] Stopped monitoring service: %s", svc.ServiceName)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("[ServiceMonitor] Context cancelled for service %s", svc.ServiceName)
+			return
+
+		case event, ok := <-eventChan:
+			if !ok {
+				log.Printf("[ServiceMonitor] Event channel closed for service %s", svc.ServiceName)
+				return
+			}
+
+			taskID := event.TaskID
+			mu.Lock()
+			monitor, exists := taskMonitors[taskID]
+
+			// Create new monitor for new tasks
+			if !exists && event.Type == health.EventTypeCreated {
+				log.Printf("[ServiceMonitor] New task detected: %s for service %s",
+					taskID[:12], svc.ServiceName)
+
+				monitor = health.NewMonitor(cli, taskID, svc.ServiceID, svc.ServiceName)
+				taskMonitors[taskID] = monitor
+
+				// Start monitor in background
+				go func(m *health.Monitor) {
+					if err := m.Start(ctx); err != nil && err != context.Canceled {
+						log.Printf("[ServiceMonitor] Monitor error for task %s: %v", taskID[:12], err)
+					}
+
+					// Remove from registry when done
+					mu.Lock()
+					delete(taskMonitors, taskID)
+					mu.Unlock()
+					log.Printf("[ServiceMonitor] Task %s monitor finished", taskID[:12])
+				}(monitor)
+			}
+
+			// Send event to existing monitor
+			if monitor != nil {
+				monitor.SendEvent(event)
+			}
+
+			mu.Unlock()
+
+			// Log important events at service level
+			switch event.Type {
+			case health.EventTypeCreated:
+				log.Printf("[ServiceMonitor] 🆕 Service %s: Task %s created",
+					svc.ServiceName, taskID[:12])
+			case health.EventTypeFailed:
+				log.Printf("[ServiceMonitor] ❌ Service %s: Task %s failed - %s",
+					svc.ServiceName, taskID[:12], event.Message)
+			case health.EventTypeHealthy:
+				log.Printf("[ServiceMonitor] 💚 Service %s: Task %s is healthy",
+					svc.ServiceName, taskID[:12])
+			case health.EventTypeUnhealthy:
+				log.Printf("[ServiceMonitor] 💔 Service %s: Task %s is unhealthy - %s",
+					svc.ServiceName, taskID[:12], event.Message)
+			case health.EventTypeRunning:
+				log.Printf("[ServiceMonitor] ✅ Service %s: Task %s is running",
+					svc.ServiceName, taskID[:12])
+			}
+		}
 	}
-	return nil
 }
 
 // waitForAllTasksHealthy waits for all tasks of updated services to become healthy
@@ -208,6 +341,7 @@ func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName s
 	defer ticker.Stop()
 
 	startTime := time.Now()
+	serviceHealthyCount := make(map[string]int)
 
 	for {
 		select {
@@ -220,58 +354,98 @@ func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName s
 			unhealthyTasks := []string{}
 
 			for _, svc := range updatedServices {
+				// Get ALL tasks for this service (including failed/shutdown)
 				filter := filters.NewArgs()
 				filter.Add("service", svc.ServiceID)
-				filter.Add("desired-state", "running")
 
 				tasks, err := cli.TaskList(ctx, types.TaskListOptions{
 					Filters: filter,
 				})
 				if err != nil {
-					log.Printf("Failed to list tasks for service %s: %v", svc.ServiceName, err)
+					log.Printf("[HealthCheck] Failed to list tasks for service %s: %v", svc.ServiceName, err)
 					allHealthy = false
 					continue
 				}
 
-				serviceHealthy := false
+				healthyTaskCount := 0
+				hasRunningTask := false
+
 				for _, t := range tasks {
-					// Skip old tasks
+					// Skip tasks from old versions
 					if t.Version.Index < svc.Version.Index {
 						continue
 					}
 
-					// Check if task is running
-					if t.Status.State != dockerswarm.TaskStateRunning {
-						allHealthy = false
-						unhealthyTasks = append(unhealthyTasks, fmt.Sprintf("%s (state: %s)", svc.ServiceName, t.Status.State))
+					// Log failed/shutdown tasks but don't fail immediately (Docker Swarm may restart)
+					if t.Status.State == dockerswarm.TaskStateFailed ||
+						t.Status.State == dockerswarm.TaskStateShutdown ||
+						t.Status.State == dockerswarm.TaskStateRejected {
+						log.Printf("[HealthCheck] ⚠️  Task %s (%s) is %s: %s (waiting for restart)",
+							t.ID[:12], svc.ServiceName, t.Status.State, t.Status.Message)
 						continue
 					}
 
-					// Check container health if available
+					// Only check tasks with desired-state=running
+					if t.DesiredState != dockerswarm.TaskStateRunning {
+						continue
+					}
+
+					hasRunningTask = true
+
+					// Check if task is running
+					if t.Status.State != dockerswarm.TaskStateRunning {
+						allHealthy = false
+						unhealthyTasks = append(unhealthyTasks, fmt.Sprintf("%s/%s (state: %s)", svc.ServiceName, t.ID[:12], t.Status.State))
+						log.Printf("[HealthCheck] ⏳ Task %s (%s) is %s", t.ID[:12], svc.ServiceName, t.Status.State)
+						continue
+					}
+
+					// Check container health if healthcheck is defined
 					if t.Status.ContainerStatus != nil && t.Status.ContainerStatus.ContainerID != "" {
 						containerInfo, err := cli.ContainerInspect(ctx, t.Status.ContainerStatus.ContainerID)
 						if err != nil {
-							log.Printf("Failed to inspect container for %s: %v", svc.ServiceName, err)
+							log.Printf("[HealthCheck] Failed to inspect container %s for task %s (%s): %v",
+								t.Status.ContainerStatus.ContainerID[:12], t.ID[:12], svc.ServiceName, err)
 							allHealthy = false
+							unhealthyTasks = append(unhealthyTasks, fmt.Sprintf("%s/%s (inspect failed)", svc.ServiceName, t.ID[:12]))
 							continue
 						}
 
-						// If health check is defined, wait for healthy status
+						// If container has health check, wait for healthy status
 						if containerInfo.State.Health != nil {
 							if containerInfo.State.Health.Status != "healthy" {
 								allHealthy = false
-								unhealthyTasks = append(unhealthyTasks, fmt.Sprintf("%s (health: %s)", svc.ServiceName, containerInfo.State.Health.Status))
+								unhealthyTasks = append(unhealthyTasks, fmt.Sprintf("%s/%s (health: %s)", svc.ServiceName, t.ID[:12], containerInfo.State.Health.Status))
+								log.Printf("[HealthCheck] ⏳ Task %s (%s) is %s", t.ID[:12], svc.ServiceName, containerInfo.State.Health.Status)
 							} else {
-								serviceHealthy = true
+								log.Printf("[HealthCheck] ✅ Task %s (%s) is healthy", t.ID[:12], svc.ServiceName)
+								healthyTaskCount++
 							}
 						} else {
-							// No health check, running is enough
-							serviceHealthy = true
+							// No healthcheck defined, just check if running
+							log.Printf("[HealthCheck] ✅ Task %s (%s) is running (no healthcheck)", t.ID[:12], svc.ServiceName)
+							healthyTaskCount++
 						}
+					} else {
+						// No container status yet
+						allHealthy = false
+						unhealthyTasks = append(unhealthyTasks, fmt.Sprintf("%s/%s (no container)", svc.ServiceName, t.ID[:12]))
+						log.Printf("[HealthCheck] ⏳ Task %s (%s) has no container yet", t.ID[:12], svc.ServiceName)
 					}
 				}
 
-				if !serviceHealthy {
+				// Track if service has running tasks
+				if !hasRunningTask {
+					log.Printf("[HealthCheck] ⏳ Service %s has no running tasks yet (may be restarting)", svc.ServiceName)
+					allHealthy = false
+				}
+
+				serviceHealthyCount[svc.ServiceName] = healthyTaskCount
+			}
+
+			// Check that all services have at least one healthy task
+			for _, svc := range updatedServices {
+				if serviceHealthyCount[svc.ServiceName] == 0 {
 					allHealthy = false
 				}
 			}
@@ -281,7 +455,7 @@ func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName s
 			}
 
 			if len(unhealthyTasks) > 0 {
-				log.Printf("Waiting for: %v", unhealthyTasks)
+				log.Printf("[HealthCheck] Waiting for: %v", unhealthyTasks)
 			}
 		}
 	}
