@@ -12,9 +12,9 @@ type Resolver struct {
 }
 
 // NewResolver creates a new path resolver
-// It uses SWARM_STACK_PATH environment variable or current working directory
+// It uses STACKMAN_WORKDIR environment variable or current working directory
 func NewResolver() (*Resolver, error) {
-	basePath := os.Getenv("SWARM_STACK_PATH")
+	basePath := os.Getenv("STACKMAN_WORKDIR")
 	if basePath == "" {
 		cwd, err := os.Getwd()
 		if err != nil {

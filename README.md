@@ -1,236 +1,489 @@
-# stackman
+# Stackman
 
-`stackman` is a production-ready CLI utility written in Go that provides **zero-downtime deployments** for Docker Swarm stacks with intelligent health monitoring and automatic rollback capabilities.
+   <picture>
+      <source media="(prefers-color-scheme: light)" srcset="https://cdn.jsdelivr.net/gh/SomeBlackMagic/stackman@master/docs/9cb7e16c-f057-4660-a96f-258fd980389d.png" width="350" alt="Stackman Logo">
+      <img src="https://cdn.jsdelivr.net/gh/SomeBlackMagic/stackman@master/docs/2bcf0cd7-f652-4fd9-9c67-ea1dc4515ca8.png" width="350" alt="Cilium Logo">
+   </picture>
+
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](go.mod)
+[![Docker](https://img.shields.io/badge/Docker-Swarm-2496ED?logo=docker)](https://docs.docker.com/engine/swarm/)
+
+**stackman** - Docker Swarm stack orchestrator with health-aware deployment, intelligent rollback, and
+Helm-like workflow for Docker Swarm.
+
+A CLI tool written in Go that brings **zero-downtime deployments**, **real-time health monitoring**, and **automatic
+rollback** to Docker Swarm, filling the gap between basic `docker stack deploy` and enterprise-grade deployment
+automation.
 
 ---
 
 ## The Problem It Solves
 
-When deploying services to Docker Swarm, `docker stack deploy` returns immediately after submitting the deployment request, without waiting for services to actually start or become healthy. This creates several critical problems in production environments:
+Docker Swarm's `docker stack deploy` has a critical limitation: it returns **immediately** after submitting the
+deployment request, without waiting for services to actually start, become healthy, or validate successful deployment.
+This creates production risks:
 
-1. **No deployment validation** - You don't know if your deployment succeeded or failed
-2. **Broken services go unnoticed** - Failed health checks or crashed containers are only discovered later
-3. **Manual rollback required** - When deployments fail, you must manually identify and revert to previous versions
-4. **CI/CD pipeline issues** - Pipelines report success even when services are broken
-5. **Downtime risk** - No automated way to prevent bad deployments from reaching production
+### Problems with `docker stack deploy`
 
-`stackman` solves these problems by:
-- **Waiting** for all services to deploy and pass health checks
-- **Monitoring** real-time service status, container health, and task failures
-- **Validating** that all containers become healthy before considering deployment successful
-- **Rolling back automatically** if health checks fail or services don't start
-- **Providing visibility** with real-time logs and event streaming during deployment
+| Problem                    | Impact                                            | Example                                     |
+|----------------------------|---------------------------------------------------|---------------------------------------------|
+| **No validation**          | Deployments appear successful even when they fail | CI/CD marks green, but service crashes      |
+| **No health awareness**    | Broken services go unnoticed until user reports   | Database migration fails, app starts anyway |
+| **Manual rollback**        | No automatic recovery from bad deployments        | 3 AM page, manual investigation required    |
+| **Silent failures**        | Task failures, health check failures ignored      | Service dies repeatedly, no alerts          |
+| **No deployment tracking** | Can't tell when deployment actually completes     | Is it done? Is it healthy? Unknown.         |
+
+### How stackman Solves This
+
+`stackman` wraps Docker Swarm API with **deployment intelligence**:
+
+✅ **Waits for deployment** - Monitors service updates until all tasks are running
+✅ **Health validation** - Ensures all containers pass health checks before success
+✅ **Automatic rollback** - Reverts to previous state on failure or timeout
+✅ **Real-time visibility** - Streams logs, events, and health status during deployment
+✅ **Production-ready** - Signal handling, proper exit codes, CI/CD integration
+✅ **Task tracking** - Monitors old task shutdown and new task startup with version control
 
 ---
 
 ## How It Works
 
+stackman follows a **deployment lifecycle** pattern with automatic safety mechanisms:
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ 1. SNAPSHOT: Capture current service state for rollback        │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 1. PARSE & VALIDATE                                              │
+│    • Parse docker-compose.yml                                    │
+│    • Validate image tags (no :latest without --allow-latest)     │
+│    • Convert compose spec to Swarm ServiceSpec                   │
+└──────────────────────────────────────────────────────────────────┘
                               ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 2. DEPLOY: Execute full stack deployment                       │
-│    • Parse compose file                                         │
-│    • Remove obsolete services                                   │
-│    • Pull Docker images                                         │
-│    • Create networks and volumes                                │
-│    • Deploy/update services                                     │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 2. SNAPSHOT (Rollback Preparation)                               │
+│    • Capture current service specs (ServiceInspect)              │
+│    • Store service versions and task states                      │
+│    • Record resources (networks, volumes, secrets, configs)      │
+└──────────────────────────────────────────────────────────────────┘
                               ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 3. MONITOR: Real-time streaming and health monitoring          │
-│    • Stream service logs                                        │
-│    • Stream Docker events                                       │
-│    • Monitor container health status                            │
-│    • Track failed tasks                                         │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 3. DEPLOYMENT                                                    │
+│    • Remove obsolete services (--prune)                          │
+│    • Pull images with progress tracking                          │
+│    • Create/update networks (overlay)                            │
+│    • Create/update volumes (local)                               │
+│    • Deploy services with unique DeployID label                  │
+│    • Track service version changes                               │
+└──────────────────────────────────────────────────────────────────┘
+                              ↓
+┌──────────────────────────────────────────────────────────────────┐
+│ 4. HEALTH MONITORING (unless --no-wait)                          │
+│    • Subscribe to Docker events (task lifecycle)                 │
+│    • Start per-task monitors with log streaming                  │
+│    • Track UpdateStatus.State → "completed"                      │
+│    • Poll container health status (State.Health)                 │
+│    • Wait for all tasks: Running + Healthy                       │
+└──────────────────────────────────────────────────────────────────┘
                               ↓
                     ┌─────────────────┐
                     │ All healthy?    │
                     └─────────────────┘
                        ↙           ↘
-                    YES             NO
-                     ↓               ↓
-            ┌──────────────┐  ┌──────────────────┐
-            │ SUCCESS      │  │ ROLLBACK         │
-            │ Exit 0       │  │ Restore snapshot │
-            └──────────────┘  │ Exit 1           │
+                  YES               NO/TIMEOUT/SIGINT
+                   ↓                 ↓
+          ┌──────────────┐    ┌──────────────────┐
+          │ ✅ SUCCESS   │    │ ⚠️ ROLLBACK      │
+          │ Exit 0       │    │ • Restore specs  │
+          └──────────────┘    │ • Revert versions│
+                              │ • Wait healthy   │
+                              │ Exit 1/2/130     │
                               └──────────────────┘
 ```
 
-### Deployment Process
+### Deployment Process Details
 
-1. **Snapshot Creation** - Captures current service configurations and task states
-2. **Service Cleanup** - Removes services no longer in compose file
-3. **Image Pull** - Pulls all required Docker images with progress tracking
-4. **Network Setup** - Creates or updates Docker networks with proper configuration
-5. **Volume Creation** - Sets up named volumes
-6. **Service Deployment** - Creates new or updates existing services
-7. **Task Monitoring** - Tracks service tasks and detects recreation
-8. **Health Checks** - Continuously monitors container health status
-9. **Rollback on Failure** - Automatically restores previous service versions if deployment fails
+#### Phase 1: Pre-Deployment
+
+- **Compose parsing** - YAML → internal model (no external compose libraries)
+- **Path resolution** - Converts relative paths to absolute using `STACKMAN_WORKDIR`
+- **Validation** - Checks `:latest` tag protection, required fields
+- **Templating** - Applies `${VAR}` environment variable substitution
+
+#### Phase 2: Snapshotting
+
+- **ServiceInspect** - Captures current `Spec` and `Version.Index` for each service
+- **Resource inventory** - Records existing networks, volumes, secrets, configs
+- **Rollback readiness** - Ensures we can restore previous state on failure
+
+#### Phase 3: Deployment Execution
+
+1. **Image Pull** - Pre-pulls all images (respects `DOCKER_CONFIG_PATH` for auth)
+2. **Resource Creation** - Networks → Volumes → Secrets → Configs (dependency order)
+3. **Service Update** - Uses `ServiceUpdate` API with current `Version.Index`
+4. **DeployID Injection** - Adds `com.stackman.deploy.id` label to all tasks for tracking
+
+#### Phase 4: Health Monitoring
+
+- **Event Subscription** - Listens to `type=task` events filtered by stack namespace
+- **Task Watchers** - Spawns goroutine per task for log streaming and container inspection
+- **UpdateStatus Tracking** - Waits for `UpdateStatus.State == "completed"`
+- **Health Polling** - Periodic `ContainerInspect` checks `State.Health.Status == "healthy"`
+- **DeployID Filtering** - Only monitors tasks with matching `com.stackman.deploy.id` label
+
+#### Phase 5: Rollback (on failure)
+
+- **Trigger Conditions**: Health timeout, task failures, SIGINT/SIGTERM
+- **Restoration**: Applies previous `ServiceSpec` using saved `Version.Index`
+- **Health Re-check**: Waits for rolled-back services to become healthy (with `--rollback-timeout`)
 
 ---
 
 ## Key Features
 
-### Production-Ready Deployment
-- **Intelligent service updates** - Detects whether services actually changed and need recreation
-- **Task tracking** - Monitors old tasks shutdown and new tasks startup
-- **Progress reporting** - Real-time visibility into deployment status
-- **Graceful shutdown** - Handles interruption signals (SIGINT/SIGTERM) with automatic rollback
+### 🚀 Deployment Intelligence
 
-### Health Monitoring
-- **Container health checks** - Waits for all containers to report "healthy" status
-- **Service readiness** - Ensures all service tasks are running before health checks
-- **Failed task detection** - Tracks and reports failed tasks across services
-- **Configurable thresholds** - Set maximum failed tasks before deployment fails
-- **Timeout protection** - Prevents hanging on unresponsive services
+- ✅ **Health-aware deployment** - Waits for all services to become healthy before declaring success
+- ✅ **Automatic rollback** - Reverts to previous state on failure, timeout, or interrupt (SIGINT/SIGTERM)
+- ✅ **Version-aware updates** - Tracks service `Version.Index` to prevent update conflicts
+- ✅ **DeployID tracking** - Injects unique deployment ID into all tasks for precise monitoring
+- ✅ **Image pre-pull** - Pulls images before deployment with progress tracking
+- ✅ **Dependency-ordered deployment** - Creates resources in correct order (networks → volumes → secrets → services)
 
-### Automatic Rollback
-- **State snapshots** - Captures complete service state before deployment
-- **Smart rollback** - Restores previous service specs on failure
-- **Interrupt handling** - Rollback on Ctrl+C or other signals
-- **Version preservation** - Maintains previous image versions and configurations
+### 🔍 Real-Time Monitoring
 
-### Real-Time Visibility
-- **Log streaming** - Live logs from all services during deployment
-- **Event streaming** - Docker events for containers, services, and nodes
-- **Health log streaming** - Dedicated healthcheck execution logs with pass/fail status
-- **Status reporting** - Periodic updates on task states and container health
+- ✅ **Event-driven architecture** - Subscribes to Docker events (`type=task`) for instant task lifecycle updates
+- ✅ **Per-task monitoring** - Spawns dedicated watcher goroutine for each task with log streaming
+- ✅ **UpdateStatus tracking** - Monitors `ServiceInspectWithRaw` → `UpdateStatus.State == "completed"`
+- ✅ **Health polling** - Periodic `ContainerInspect` checks `State.Health.Status`
+- ✅ **Failed task detection** - Reports task failures with exit codes and error messages
+- ✅ **No healthcheck tolerance** - Services without healthchecks are considered healthy if running
 
-### Enterprise Features
-- **CI/CD integration** - Proper exit codes and logging for automated pipelines
-- **Environment configuration** - Support for environment variables
-- **Flexible timeouts** - Configurable health check and deployment timeouts
-- **Multi-service support** - Handles complex stacks with many interdependent services
+### 📦 Compose File Support
+
+- ✅ **Custom YAML parser** - No external compose libraries (only `gopkg.in/yaml.v3`)
+- ✅ **Path resolution** - Converts relative paths (`./data`) to absolute using `STACKMAN_WORKDIR` or CWD
+- ✅ **Environment substitution** - Supports `${VAR}` syntax for environment variables
+- ✅ **Full Swarm spec mapping** - Converts `deploy.replicas`, `deploy.update_config`, `deploy.placement`, etc.
+- ✅ **Resource support** - Networks (overlay), Volumes (local), Secrets, Configs (parsing implemented)
+- ✅ **Healthcheck conversion** - Maps `healthcheck` to `ContainerSpec.Healthcheck`
+
+### 🛡️ Safety & Reliability
+
+- ✅ **Snapshot-based rollback** - Captures `ServiceInspect` before deployment for safe revert
+- ✅ **Signal handling** - Intercepts SIGINT/SIGTERM → triggers rollback → exits with code 130
+- ✅ **Timeout protection** - `--timeout` for deployment, `--rollback-timeout` for rollback
+- ✅ **Image tag validation** - Blocks `:latest` tag unless `--allow-latest` is set
+- ✅ **Idempotency** - Repeated applies without changes result in no-op
+- ✅ **Concurrent-safe** - Handles multiple goroutines for task monitoring with mutexes
+
+### 🔧 Operational Features
+
+- ✅ **Multiple subcommands** - `apply`, `rollback`, `diff`, `status`, `logs`, `events`
+- ✅ **CI/CD friendly** - Proper exit codes (0=success, 1=failure, 2=timeout, 130=interrupted)
+- ✅ **TLS support** - Respects `DOCKER_HOST`, `DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH`
+- ✅ **Registry authentication** - Uses `DOCKER_CONFIG_PATH` for private registry auth (`config.json`)
+- ✅ **Parallel updates** - `--parallel` flag for concurrent service updates (not yet fully implemented)
+- ✅ **No external dependencies** - Only uses: `github.com/docker/docker`, `github.com/docker/go-units`,
+  `golang.org/x/net`, `gopkg.in/yaml.v3`
 
 ---
 
 ## Installation
 
-### Download Pre-built Binary
+### Option 1: Download Pre-built Binary
 
 ```bash
-wget https://github.com/SomeBlackMagic/stackman/releases/latest/download/stackman-amd64-linux
-chmod +x stackman-amd64-linux
-mv stackman-amd64-linux /usr/local/bin/stackman
+# Linux (amd64)
+wget https://github.com/SomeBlackMagic/stackman/releases/latest/download/stackman-linux-amd64
+chmod +x stackman-linux-amd64
+sudo mv stackman-linux-amd64 /usr/local/bin/stackman
+
+# macOS (amd64)
+curl -L https://github.com/SomeBlackMagic/stackman/releases/latest/download/stackman-darwin-amd64 -o stackman
+chmod +x stackman
+sudo mv stackman /usr/local/bin/stackman
 ```
 
-### Build from Source
+### Option 2: Build from Source
 
 ```bash
 git clone https://github.com/SomeBlackMagic/stackman.git
 cd stackman
 go build -o stackman .
+sudo mv stackman /usr/local/bin/stackman
+```
+
+### Option 3: Using Make
+
+```bash
+make build          # Build binary
+make install        # Install to /usr/local/bin
+```
+
+### Verify Installation
+
+```bash
+stackman version
 ```
 
 ---
 
 ## Usage
 
-### Basic Usage
+### Commands Overview
 
 ```bash
-stackman <stack-name> <compose-file> [health-timeout-minutes] [max-failed-tasks]
+stackman <command> [flags]
 ```
+
+#### Available Commands
+
+| Command    | Description                           | Status        |
+|------------|---------------------------------------|---------------|
+| `apply`    | Deploy or update a stack              | ✅ Implemented |
+| `rollback` | Rollback stack to previous state      | 🚧 Stub       |
+| `diff`     | Show deployment plan without applying | 🚧 Stub       |
+| `status`   | Show current stack status             | 🚧 Stub       |
+| `logs`     | Show logs for stack services          | 🚧 Stub       |
+| `events`   | Show events for stack services        | 🚧 Stub       |
+| `version`  | Show version information              | ✅ Implemented |
+
+### `apply` Command (Primary Usage)
+
+Deploy or update a Docker Swarm stack with health monitoring and automatic rollback.
+
+#### Basic Syntax
+
+```bash
+stackman apply -n <stack-name> -f <compose-file> [flags]
+```
+
+#### Flags
+
+| Flag                 | Type     | Default        | Description                                       |
+|----------------------|----------|----------------|---------------------------------------------------|
+| `-n, --name`         | string   | **(required)** | Stack name                                        |
+| `-f, --file`         | string   | **(required)** | Path to docker-compose.yml                        |
+| `--values`           | string   | -              | Values file for templating (not yet implemented)  |
+| `--set`              | string   | -              | Set values (key=value pairs, not yet implemented) |
+| `--timeout`          | duration | `15m`          | Deployment health check timeout                   |
+| `--rollback-timeout` | duration | `10m`          | Rollback timeout                                  |
+| `--no-wait`          | bool     | `false`        | Don't wait for health checks                      |
+| `--prune`            | bool     | `false`        | Remove orphaned services                          |
+| `--allow-latest`     | bool     | `false`        | Allow :latest image tags                          |
+| `--parallel`         | int      | `1`            | Parallel service updates (not yet implemented)    |
+| `--logs`             | bool     | `true`         | Stream container logs during deployment           |
 
 ### Examples
 
-**Basic deployment:**
+#### Basic Deployment
+
 ```bash
-stackman mystack docker-compose.yml
+stackman apply -n mystack -f docker-compose.yml
 ```
 
-**With custom health timeout (10 minutes):**
+#### With Custom Timeouts
+
 ```bash
-stackman mystack docker-compose.yml 10
+stackman apply -n mystack -f docker-compose.yml --timeout 20m --rollback-timeout 5m
 ```
 
-**With custom timeout and max failed tasks:**
+#### Deploy Without Waiting (Fire and Forget)
+
 ```bash
-stackman mystack docker-compose.yml 10 5
+stackman apply -n mystack -f docker-compose.yml --no-wait
 ```
 
-**Using environment variables:**
+#### Remove Obsolete Services
+
 ```bash
-HEALTH_TIMEOUT_MINUTES=15 MAX_FAILED_TASKS=5 stackman mystack docker-compose.yml
+stackman apply -n mystack -f docker-compose.yml --prune
 ```
 
-**With custom Docker config path (for private registries):**
+#### Allow :latest Tag (Not Recommended for Production)
+
 ```bash
-DOCKER_CONFIG_PATH=/path/to/docker/config stackman mystack docker-compose.yml
+stackman apply -n mystack -f docker-compose.yml --allow-latest
+```
+
+#### Disable Log Streaming
+
+```bash
+stackman apply -n mystack -f docker-compose.yml --logs=false
+```
+
+#### Using Environment Variables for Docker Connection
+
+```bash
+export DOCKER_HOST=tcp://192.168.1.100:2376
+export DOCKER_TLS_VERIFY=1
+export DOCKER_CERT_PATH=/path/to/certs
+stackman apply -n mystack -f docker-compose.yml
+```
+
+#### Using Private Registry Authentication
+
+```bash
+# Ensure $HOME/.docker/config.json contains auth credentials
+# Or set custom path:
+export DOCKER_CONFIG_PATH=/etc/docker
+stackman apply -n mystack -f docker-compose.yml
 ```
 
 ---
 
 ## Configuration
 
-### Command-line Arguments
-
-| Position | Argument              | Description                                           | Default | Required |
-|----------|-----------------------|-------------------------------------------------------|---------|----------|
-| 1        | `<stack-name>`        | Name of the Docker Swarm stack                        | -       | Yes      |
-| 2        | `<compose-file>`      | Path to docker-compose.yml                            | -       | Yes      |
-| 3        | `[health-timeout]`    | Health check timeout in minutes                       | 1       | No       |
-| 4        | `[max-failed-tasks]`  | Maximum failed tasks before rollback                  | 3       | No       |
-
 ### Environment Variables
 
-Environment variables take precedence over command-line arguments:
+stackman reads configuration from environment variables:
 
-| Variable                 | Description                                    | Default              |
-|--------------------------|------------------------------------------------|----------------------|
-| `HEALTH_TIMEOUT_MINUTES` | Health check timeout in minutes                | 1                    |
-| `MAX_FAILED_TASKS`       | Maximum number of failed tasks before rollback | 3                    |
-| `DOCKER_CONFIG_PATH`     | Path to Docker config directory (for registry auth) | `$HOME/.docker` |
+#### Docker Connection
+
+| Variable             | Description                                         | Default                       | Example                    |
+|----------------------|-----------------------------------------------------|-------------------------------|----------------------------|
+| `DOCKER_HOST`        | Docker daemon socket                                | `unix:///var/run/docker.sock` | `tcp://192.168.1.100:2376` |
+| `DOCKER_TLS_VERIFY`  | Enable TLS verification                             | `0`                           | `1`                        |
+| `DOCKER_CERT_PATH`   | Path to TLS certificates                            | -                             | `/etc/docker/certs`        |
+| `DOCKER_CONFIG_PATH` | Path to Docker config directory (for registry auth) | `$HOME/.docker`               | `/etc/docker`              |
+
+#### Deployment Behavior
+
+| Variable                    | Description                                                | Default                   | Example                      |
+|-----------------------------|------------------------------------------------------------|---------------------------|------------------------------|
+| `STACKMAN_WORKDIR`          | Base path for relative volume mounts                       | Current working directory | `/var/app/stacks/production` |
+| `STACKMAN_DEPLOY_TIMEOUT`   | Deployment timeout (overridden by `--timeout` flag)        | `15m`                     | `20m`                        |
+| `STACKMAN_ROLLBACK_TIMEOUT` | Rollback timeout (overridden by `--rollback-timeout` flag) | `10m`                     | `5m`                         |
+
+#### Logging & Output
+
+| Variable    | Description                                  | Default | Example |
+|-------------|----------------------------------------------|---------|---------|
+| `LOG_LEVEL` | Log verbosity (not yet implemented)          | `info`  | `debug` |
+| `NO_COLOR`  | Disable colored output (not yet implemented) | `false` | `true`  |
+
+### Configuration Precedence
+
+Priority (highest to lowest):
+
+1. **Command-line flags** (e.g., `--timeout 20m`)
+2. **Environment variables** (e.g., `STACKMAN_DEPLOY_TIMEOUT=20m`)
+3. **Default values** (e.g., `15m` for timeout)
 
 ---
 
 ## Exit Codes
 
-| Code | Meaning                                                     |
-|------|-------------------------------------------------------------|
-| `0`  | Deployment completed successfully, all services healthy     |
-| `1`  | Deployment failed, rollback performed                       |
-| `130`| Deployment interrupted by user (SIGINT), rollback performed |
+stackman follows standard Unix exit code conventions for CI/CD integration:
+
+| Code    | Meaning          | Trigger Condition                                             | Rollback Performed?           |
+|---------|------------------|---------------------------------------------------------------|-------------------------------|
+| **0**   | Success          | All services deployed and healthy                             | N/A                           |
+| **1**   | Failure          | Deployment failed (parse error, API error, validation failed) | ✅ Yes (if deployment started) |
+| **2**   | Timeout          | Health check timeout reached                                  | ✅ Yes                         |
+| **3**   | Rollback Failed  | Deployment failed AND rollback also failed (as per spec)      | ⚠️ Attempted but failed       |
+| **4**   | Connection Error | Docker API/Registry connection failed (as per spec)           | N/A                           |
+| **130** | Interrupted      | User pressed Ctrl+C (SIGINT) or SIGTERM received              | ✅ Yes                         |
+
+### Exit Code Usage in CI/CD
+
+```bash
+# GitLab CI / GitHub Actions example
+stackman apply -n production -f docker-compose.yml
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 0 ]; then
+  echo "✅ Deployment successful"
+elif [ $EXIT_CODE -eq 1 ]; then
+  echo "❌ Deployment failed, rollback succeeded"
+  exit 1
+elif [ $EXIT_CODE -eq 2 ]; then
+  echo "⏱️ Deployment timeout, rollback succeeded"
+  exit 1
+elif [ $EXIT_CODE -eq 130 ]; then
+  echo "🛑 Deployment interrupted, rollback succeeded"
+  exit 1
+else
+  echo "💥 Critical error (code $EXIT_CODE)"
+  exit $EXIT_CODE
+fi
+```
 
 ---
 
 ## Requirements
 
-### System Requirements
-- **Docker Engine** with Swarm mode enabled (`docker swarm init`)
-- **Go 1.21+** (only for building from source)
-- **Linux/macOS/Windows** - Cross-platform support
+### Runtime Requirements
+
+| Requirement          | Version                 | Purpose             |
+|----------------------|-------------------------|---------------------|
+| **Docker Engine**    | 19.03+                  | Swarm API access    |
+| **Docker Swarm**     | Initialized             | `docker swarm init` |
+| **Operating System** | Linux / macOS / Windows | Cross-platform      |
+| **Architecture**     | amd64 / arm64           | Binary architecture |
+
+### Build Requirements (Only for Building from Source)
+
+| Requirement | Version    | Purpose            |
+|-------------|------------|--------------------|
+| **Go**      | 1.24+      | Compiler toolchain |
+| **Make**    | (optional) | Build automation   |
 
 ### Docker Compose File Requirements
-- Services **must have health checks** defined for monitoring to work
-- Supports Docker Compose file format version 3.x
-- Stack must be deployed to Docker Swarm (not standalone Docker)
 
-### Minimal Health Check Example
+✅ **Supported**: Compose file format version 3.x (Swarm mode)
+❌ **Not Supported**: Compose file version 2.x (standalone Docker)
+
+#### Health Check Recommendations
+
+- ✅ **Recommended**: Define `healthcheck` for all services for accurate deployment validation
+- ⚠️ **Optional**: Services without healthcheck are considered healthy if task is in `running` state
+- 🔍 **Best Practice**: Use fast healthchecks (`interval: 5-10s`) with reasonable `start_period`
+
+### Minimal Working Example
 
 ```yaml
 version: '3.8'
 
 services:
   web:
-    image: nginx:latest
+    image: nginx:1.25-alpine
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost"]
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost" ]
       interval: 10s
-      timeout: 2s
+      timeout: 3s
       retries: 3
-      start_period: 30s
+      start_period: 5s
     deploy:
       replicas: 2
       update_config:
         parallelism: 1
         delay: 10s
-        failure_action: rollback
+
+networks:
+  default:
+    driver: overlay
+```
+
+### Pre-Deployment Checklist
+
+Before using stackman, ensure:
+
+```bash
+# 1. Docker is running
+docker info
+
+# 2. Swarm is initialized
+docker swarm init
+
+# 3. You are a swarm manager node
+docker node ls
+
+# 4. Your compose file is valid
+docker-compose -f docker-compose.yml config
+
+# 5. Required images are pullable (for private registries)
+docker login registry.example.com
 ```
 
 ---
@@ -310,39 +563,95 @@ Rollback completed successfully
 
 ## Project Structure
 
-The application is organized into focused packages:
+stackman follows a clean, modular architecture aligned with the technical specification:
 
 ```
 stackman/
-├── main.go              # Entry point, CLI argument parsing, orchestration
-├── compose/             # Docker Compose file parsing and conversion
-│   ├── types.go         # Complete Compose file structure definitions
-│   ├── parser.go        # YAML parsing logic
-│   └── converter.go     # Compose → Swarm ServiceSpec conversion
-├── deployer/            # Stack deployment and management
-│   ├── stack.go         # Main deployment orchestration
-│   ├── services.go      # Service creation and updates
-│   ├── images.go        # Image pulling with progress tracking
-│   ├── networks.go      # Network creation and management
-│   ├── volumes.go       # Volume creation and management
-│   ├── cleanup.go       # Obsolete service removal
-│   └── rollback.go      # Snapshot creation and rollback logic
-└── monitor/             # Real-time monitoring and health checks
-    ├── health.go        # Container health monitoring
-    ├── logs.go          # Service log streaming
-    ├── events.go        # Docker event streaming
-    └── healthlog.go     # Health check log streaming
+├── main.go                      # Entry point and CLI orchestration
+├── cmd/                         # CLI commands (cobra-like structure)
+│   ├── root.go                  # Command router and usage
+│   ├── apply.go                 # apply command (✅ IMPLEMENTED)
+│   ├── rollback.go              # rollback command (🚧 stub)
+│   ├── logs.go                  # logs command (🚧 stub)
+│   ├── events.go                # events command (🚧 stub)
+│   ├── stubs.go                 # Stub implementations for incomplete commands
+│   └── version.go               # version command (✅ IMPLEMENTED)
+├── internal/                    # Internal packages (not importable externally)
+│   ├── compose/                 # ✅ Compose file parsing (no external libs)
+│   │   ├── types.go             # Compose spec types (services, networks, volumes, etc.)
+│   │   ├── parser.go            # YAML → ComposeSpec parser (gopkg.in/yaml.v3)
+│   │   └── converter.go         # ComposeSpec → Swarm ServiceSpec converter
+│   ├── swarm/                   # ✅ Docker Swarm API client wrapper
+│   │   ├── interface.go         # StackDeployer interface
+│   │   ├── stack.go             # Stack deployment orchestration
+│   │   ├── services.go          # Service create/update logic
+│   │   ├── images.go            # Image pull with progress tracking
+│   │   ├── networks.go          # Network create/inspect logic
+│   │   ├── volumes.go           # Volume create/inspect logic
+│   │   ├── cleanup.go           # Obsolete service removal
+│   │   ├── rollback.go          # Rollback execution
+│   │   └── state.go             # Current swarm state reading
+│   ├── health/                  # ✅ Health monitoring and event handling
+│   │   ├── watcher.go           # Event-driven task watcher (Docker events API)
+│   │   ├── monitor.go           # Per-task monitor with log streaming
+│   │   ├── events.go            # Event types and subscription
+│   │   └── service_update_monitor.go  # ServiceInspect UpdateStatus tracker
+│   ├── snapshot/                # ✅ Snapshot creation and restoration
+│   │   └── snapshot.go          # ServiceInspect capture and rollback
+│   ├── deployment/              # ✅ Deployment ID generation
+│   │   └── id.go                # Unique deployment ID (timestamp-based)
+│   ├── paths/                   # ✅ Path resolution logic
+│   │   └── resolver.go          # STACKMAN_WORKDIR + relative → absolute conversion
+│   ├── plan/                    # 🚧 Diff and deployment plan (partially implemented)
+│   │   ├── types.go             # Plan types (Create/Update/Delete)
+│   │   ├── planner.go           # Diff logic (current vs desired state)
+│   │   └── formatter.go         # Plan output formatting
+│   ├── apply/                   # 🔜 Apply orchestration (currently in cmd/apply.go)
+│   ├── rollback/                # 🔜 Rollback orchestration (currently in snapshot/)
+│   ├── signals/                 # 🔜 SIGINT/SIGTERM handling (currently in cmd/apply.go)
+│   └── output/                  # 🔜 Structured output and formatting
+├── tests/                       # ✅ Integration tests
+│   ├── apply_test.go            # Full deployment cycle tests
+│   ├── health_test.go           # Health check monitoring tests
+│   ├── resources_test.go        # Networks, volumes, secrets, configs tests
+│   ├── operations_test.go       # Prune, signals tests
+│   ├── negative_test.go         # Error handling tests
+│   ├── helpers_test.go          # Test utilities
+│   └── testdata/                # Test compose files
+└── docs/                        # Documentation
+    ├── stackman-diff-techspec-full.md  # Full technical specification
+    ├── TEST_RESULTS.md          # Test validation results
+    └── TESTING.md               # Testing guide
 ```
+
+### Package Responsibilities
+
+| Package                | Responsibility                                                   | Status                                 |
+|------------------------|------------------------------------------------------------------|----------------------------------------|
+| `cmd/`                 | CLI interface, argument parsing, command routing                 | ✅ Core commands implemented            |
+| `internal/compose/`    | Parse `docker-compose.yml` → internal model                      | ✅ Fully implemented                    |
+| `internal/swarm/`      | Docker Swarm API operations (services, tasks, networks, volumes) | ✅ Core operations implemented          |
+| `internal/health/`     | Event-driven task monitoring, health checks, log streaming       | ✅ Fully implemented                    |
+| `internal/snapshot/`   | Capture and restore service state for rollback                   | ✅ Implemented                          |
+| `internal/deployment/` | Generate unique deployment IDs for task tracking                 | ✅ Implemented                          |
+| `internal/paths/`      | Resolve relative paths to absolute using `STACKMAN_WORKDIR`      | ✅ Implemented                          |
+| `internal/plan/`       | Diff current vs desired state, generate deployment plan          | 🚧 Partially implemented               |
+| `internal/apply/`      | High-level apply orchestration                                   | 🔜 To be extracted from `cmd/apply.go` |
+| `internal/rollback/`   | High-level rollback orchestration                                | 🔜 To be extracted from `snapshot/`    |
+| `internal/signals/`    | SIGINT/SIGTERM handling with context propagation                 | 🔜 To be extracted from `cmd/apply.go` |
+| `internal/output/`     | Structured logging, JSON output, progress formatting             | 🔜 Planned                             |
 
 ---
 
 ## Docker Compose Support
 
-`stackman` includes a comprehensive Docker Compose parser that converts `docker-compose.yml` files to Docker Swarm service specifications.
+`stackman` includes a comprehensive Docker Compose parser that converts `docker-compose.yml` files to Docker Swarm
+service specifications.
 
 ### Supported Docker Compose Features
 
 #### Service Configuration
+
 - **Images & Build**: `image`, `build` (context, dockerfile, args, target, cache_from)
 - **Commands**: `command`, `entrypoint`
 - **Environment**: `environment` (array and map formats), `env_file`
@@ -350,22 +659,26 @@ stackman/
 - **Lifecycle**: `stop_signal`, `stop_grace_period`, `restart`
 
 #### Networking
+
 - **Ports**: Short syntax (`"8080:80"`) and long syntax (with mode and protocol)
 - **Networks**: Network attachment with aliases
 - **DNS**: `dns`, `dns_search`, `dns_opt`
 - **Hosts**: `extra_hosts`, `mac_address`
 
 #### Storage
+
 - **Volumes**: Bind mounts with automatic relative → absolute path conversion
 - **Named Volumes**: Volume references from top-level `volumes:` section
 - **Tmpfs**: Temporary filesystem mounts
 
 #### Health Checks
+
 - **Test Commands**: CMD-SHELL and exec array formats
 - **Timing**: `interval`, `timeout`, `retries`, `start_period`
 - **Control**: `disable` flag
 
 #### Deployment (Swarm-specific)
+
 - **Mode**: `replicated` (with replica count) or `global`
 - **Updates**: Parallelism, delay, order, failure action, monitor period, max failure ratio
 - **Rollback**: Same configuration as updates
@@ -374,11 +687,13 @@ stackman/
 - **Placement**: Node constraints, spread preferences, max replicas per node
 
 #### Security & Capabilities
+
 - **Capabilities**: `cap_add`, `cap_drop`
 - **Devices**: Device mappings
 - **Isolation**: Container isolation technology
 
 #### Top-Level Sections
+
 - **Services**: Complete service definitions
 - **Networks**: Custom networks with driver options, IPAM config
 - **Volumes**: Named volumes with driver options
@@ -389,14 +704,14 @@ stackman/
 
 Some Docker Compose fields are **parsed but not applied** due to Docker Swarm API restrictions:
 
-| Field | Reason |
-|-------|--------|
-| `privileged` | Not supported in Swarm mode |
-| `security_opt` | Not available in Swarm ContainerSpec |
-| `sysctls` | Not available in Swarm ContainerSpec |
-| `ulimits` | Not available in Swarm ContainerSpec |
-| `links`, `external_links` | Deprecated in favor of networks |
-| `depends_on` | No start order control in Swarm |
+| Field                     | Reason                               |
+|---------------------------|--------------------------------------|
+| `privileged`              | Not supported in Swarm mode          |
+| `security_opt`            | Not available in Swarm ContainerSpec |
+| `sysctls`                 | Not available in Swarm ContainerSpec |
+| `ulimits`                 | Not available in Swarm ContainerSpec |
+| `links`, `external_links` | Deprecated in favor of networks      |
+| `depends_on`              | No start order control in Swarm      |
 
 These fields remain in the type definitions for completeness and potential future use.
 
@@ -472,51 +787,425 @@ done
 
 ## Troubleshooting
 
-### Issue: Deployment times out waiting for health checks
+### Common Issues and Solutions
 
-**Solution**: Increase health timeout or adjust health check configuration
-```bash
-# Increase timeout to 15 minutes
-stackman mystack docker-compose.yml 15
+#### 🔴 Issue: Deployment times out waiting for health checks
 
-# Or adjust healthcheck in compose file
-healthcheck:
-  start_period: 60s  # Give container more time to start
-  interval: 15s
-  timeout: 10s
+**Symptoms**:
+
+```
+[HealthCheck] ⏳ Task abc123 (mystack_web) is starting
+ERROR: timeout after 15m waiting for services to become healthy
 ```
 
-### Issue: Service keeps failing with "task: non-zero exit"
+**Root Causes**:
 
-**Solution**: Check service logs and health check command
-```bash
-# View service logs
-docker service logs mystack_servicename
+- Health check `start_period` too short for slow-starting apps
+- Health check command timing out or failing
+- Insufficient resources (CPU/memory) causing slow startup
 
-# Test healthcheck manually
-docker exec <container-id> curl -f http://localhost/health
+**Solutions**:
+
+1. **Increase deployment timeout**:
+   ```bash
+   stackman apply -n mystack -f docker-compose.yml --timeout 30m
+   ```
+
+2. **Adjust healthcheck in compose file**:
+   ```yaml
+   healthcheck:
+     test: ["CMD", "curl", "-f", "http://localhost/health"]
+     interval: 10s
+     timeout: 5s
+     retries: 3
+     start_period: 60s  # Increase if app needs more startup time
+   ```
+
+3. **Test healthcheck command manually**:
+   ```bash
+   docker exec <container-id> curl -f http://localhost/health
+   ```
+
+---
+
+#### 🔴 Issue: Service keeps failing with "task: non-zero exit"
+
+**Symptoms**:
+
+```
+[ServiceMonitor] ❌ Service mystack_api: Task xyz789 failed - task: non-zero exit (1)
+ERROR: New task failed with state complete (desired: shutdown): task: non-zero exit (1)
 ```
 
-### Issue: Rollback restores old version but it's also unhealthy
+**Root Causes**:
 
-**Cause**: Previous version also had health issues
-**Solution**: Fix health checks or deploy a known-good version first
-```bash
-# Deploy last known good version
-stackman mystack docker-compose.good.yml
+- Application crash on startup
+- Health check failing repeatedly
+- Missing environment variables or secrets
+- Configuration errors
+
+**Solutions**:
+
+1. **Check service logs**:
+   ```bash
+   docker service logs mystack_servicename --tail 100
+   ```
+
+2. **Inspect task details**:
+   ```bash
+   docker service ps mystack_servicename --no-trunc
+   ```
+
+3. **Test container locally** (before swarm deployment):
+   ```bash
+   docker run --rm myimage:tag
+   ```
+
+4. **Check for missing config/secrets**:
+   ```bash
+   docker config ls
+   docker secret ls
+   ```
+
+---
+
+#### 🔴 Issue: Rollback restores old version but it's also unhealthy
+
+**Symptoms**:
+
+```
+Starting rollback to previous state...
+[ServiceMonitor] ❌ Service mystack_web: Task def456 failed
+ERROR: Rollback failed: services did not become healthy after rollback
 ```
 
-### Issue: "No services found" error
+**Root Cause**: Previous version has underlying health issues (database schema mismatch, missing dependencies, etc.)
 
-**Cause**: Stack name doesn't match or not using Swarm mode
-**Solution**: Verify swarm mode and stack name
-```bash
-# Initialize swarm if needed
-docker swarm init
+**Solutions**:
 
-# List existing stacks
-docker stack ls
+1. **Deploy a known-good version** (not rollback):
+   ```bash
+   # Use older compose file with working version
+   stackman apply -n mystack -f docker-compose.v1.2.3.yml
+   ```
+
+2. **Fix health check in previous version**:
+   ```yaml
+   # Temporarily disable strict health checks
+   healthcheck:
+     test: ["CMD", "true"]  # Always passes
+   ```
+
+3. **Manual intervention required**:
+   ```bash
+   # Remove stack completely
+   docker stack rm mystack
+
+   # Wait for cleanup
+   sleep 30
+
+   # Deploy known-good version
+   stackman apply -n mystack -f docker-compose.good.yml
+   ```
+
+---
+
+#### 🔴 Issue: "No services found" or "Stack not found"
+
+**Symptoms**:
+
 ```
+ERROR: No services found for stack: mystack
+```
+
+**Root Causes**:
+
+- Stack name mismatch
+- Swarm mode not initialized
+- Wrong Docker daemon context
+
+**Solutions**:
+
+1. **Verify swarm is initialized**:
+   ```bash
+   docker info | grep Swarm
+   # Should show: "Swarm: active"
+
+   # If not active:
+   docker swarm init
+   ```
+
+2. **List existing stacks**:
+   ```bash
+   docker stack ls
+   ```
+
+3. **Check Docker context**:
+   ```bash
+   docker context ls
+   docker context use default
+   ```
+
+---
+
+#### 🔴 Issue: Image pull fails with authentication error
+
+**Symptoms**:
+
+```
+ERROR: failed to pull image registry.example.com/myapp:latest: unauthorized
+```
+
+**Solutions**:
+
+1. **Login to registry**:
+   ```bash
+   docker login registry.example.com
+   ```
+
+2. **Set Docker config path**:
+   ```bash
+   export DOCKER_CONFIG_PATH=$HOME/.docker
+   stackman apply -n mystack -f docker-compose.yml
+   ```
+
+3. **Verify auth config**:
+   ```bash
+   cat $HOME/.docker/config.json
+   # Should contain "auths": { "registry.example.com": { "auth": "..." } }
+   ```
+
+---
+
+#### 🔴 Issue: Tasks stuck in "Preparing" state
+
+**Symptoms**:
+
+```
+[HealthCheck] ⏳ Task ghi012 (mystack_db) is preparing
+(repeats indefinitely)
+```
+
+**Root Causes**:
+
+- Image pull in progress (large images)
+- Node resource constraints
+- Network issues
+
+**Solutions**:
+
+1. **Check task status**:
+   ```bash
+   docker service ps mystack_servicename --no-trunc
+   ```
+
+2. **Check node resources**:
+   ```bash
+   docker node ls
+   docker node inspect <node-id> --format '{{.Status}}'
+   ```
+
+3. **Manually pull image on node**:
+   ```bash
+   # SSH to swarm node
+   docker pull myregistry/myimage:tag
+   ```
+
+---
+
+#### 🟡 Issue: stackman hangs after "Stack deployed successfully"
+
+**Symptom**: Command doesn't exit after deployment
+
+**Root Cause**: Waiting for health checks (expected behavior)
+
+**Solutions**:
+
+1. **Use `--no-wait`** if you don't want to wait:
+   ```bash
+   stackman apply -n mystack -f docker-compose.yml --no-wait
+   ```
+
+2. **Check health check status** in another terminal:
+   ```bash
+   docker service ps mystack_servicename
+   ```
+
+---
+
+### Debugging Commands
+
+```bash
+# View real-time events
+docker events --filter type=container --filter type=service
+
+# Inspect service configuration
+docker service inspect mystack_servicename --pretty
+
+# Check service update status
+docker service inspect mystack_servicename --format '{{.UpdateStatus}}'
+
+# View task history (including failed tasks)
+docker service ps mystack_servicename --no-trunc
+
+# Get container logs for specific task
+docker service logs mystack_servicename --tail 100 --follow
+```
+
+---
+
+## TODOLIST
+
+This is a comprehensive roadmap aligned with the [technical specification](docs/stackman-techspec.md). Items are
+prioritized by importance and complexity.
+
+### 🔥 Priority 1: Core Functionality (MVP Requirements)
+
+#### Deployment & Health Monitoring
+
+- [x] **Snapshot-based rollback** - Capture service state before deployment
+- [x] **Event-driven task monitoring** - Subscribe to Docker events for task lifecycle
+- [x] **Health status polling** - Check `ContainerInspect.State.Health`
+- [x] **UpdateStatus tracking** - Wait for `ServiceInspect.UpdateStatus.State == completed`
+- [x] **DeployID injection** - Add `com.stackman.deploy.id` label to tasks
+- [x] **Signal handling** - SIGINT/SIGTERM → rollback
+- [ ] **Exit code alignment** - Implement codes 2 (timeout), 3 (rollback failed), 4 (connection error)
+- [ ] **Reconciliation loop** - Periodic task list refresh to catch missed events
+
+#### Compose File Support
+
+- [x] **YAML parser** - Parse docker-compose.yml with `gopkg.in/yaml.v3`
+- [x] **Path resolution** - Convert relative paths using `STACKMAN_WORKDIR`
+- [x] **Environment substitution** - Support `${VAR}` syntax
+- [x] **Service spec conversion** - Map `deploy.*` to Swarm `ServiceSpec`
+- [ ] **Secrets creation** - Implement `docker secret create` from `secrets:` section
+- [ ] **Configs creation** - Implement `docker config create` from `configs:` section
+- [ ] **Templating engine** - Implement `--values` and `--set` (basic key-value replacement)
+
+#### Resource Management
+
+- [x] **Network creation** - Create overlay networks from `networks:` section
+- [x] **Volume creation** - Create local volumes from `volumes:` section
+- [ ] **Secrets handling** - Full lifecycle (create, update, attach to services)
+- [ ] **Configs handling** - Full lifecycle (create, update, attach to services)
+- [ ] **External resources** - Respect `external: true` flag (skip create/delete)
+- [ ] **Resource pruning** - Implement `--prune` for orphaned networks/volumes/secrets/configs
+
+### 🚀 Priority 2: Advanced Features
+
+#### Commands
+
+- [x] **apply command** - Main deployment workflow (✅ implemented)
+- [ ] **diff command** - Show deployment plan without applying
+- [ ] **status command** - Show current stack status with health info
+- [ ] **logs command** - Stream logs from stack services with filters
+- [ ] **events command** - Stream Docker events filtered by stack
+- [ ] **rollback command** - Standalone rollback from saved snapshot
+
+#### Deployment Intelligence
+
+- [ ] **Diff-based planning** - Only update services that actually changed (use `internal/plan`)
+- [ ] **Parallel service updates** - Implement `--parallel` flag for concurrent updates
+- [ ] **Dependency ordering** - Respect `depends_on` for deployment order (best-effort)
+- [ ] **Smart rollback decision** - Only rollback changed services, not entire stack
+- [ ] **Update progress tracking** - Real-time progress bar with task counts
+
+#### Safety & Validation
+
+- [x] **:latest tag blocking** - Require `--allow-latest` flag
+- [ ] **Conflict detection** - Check for name conflicts in resources
+- [ ] **Version conflict handling** - Retry `ServiceUpdate` on `Version.Index` race condition
+- [ ] **Secret content masking** - Never log secret data
+- [ ] **Dry-run mode** - `--dry-run` flag to show plan without applying
+
+### 🔧 Priority 3: Production Readiness
+
+#### Observability
+
+- [ ] **Structured logging** - Implement `internal/output` with log levels
+- [ ] **JSON output mode** - `--json` flag for machine-readable output
+- [ ] **Progress formatting** - Pretty progress bars and status tables
+- [ ] **Deployment metrics** - Report deployment duration, task counts, health check times
+- [ ] **Audit log** - Log all actions (create, update, delete) with timestamps
+
+#### Configuration
+
+- [ ] **Config file support** - `.stackman.yaml` for default settings
+- [ ] **Multiple Docker hosts** - `--docker-host` flag for remote deployments
+- [ ] **TLS configuration** - Full support for `--tls`, `--cert-path`, `--tlsverify`
+- [ ] **Context switching** - Respect Docker contexts
+
+#### Reliability
+
+- [ ] **Retry logic** - Exponential backoff for API failures
+- [ ] **Timeout configurability** - Per-service timeout overrides
+- [ ] **Graceful degradation** - Continue deployment if non-critical services fail
+- [ ] **Connection pooling** - Optimize Docker API client usage
+
+### 🧪 Priority 4: Testing & Documentation
+
+#### Testing
+
+- [x] **Unit tests** - Core logic (compose parser, path resolver, health monitor)
+- [x] **Integration tests** - Full deployment cycle with real Swarm
+- [ ] **Negative tests** - Error handling (API failures, timeout, invalid compose)
+- [ ] **Rollback tests** - Verify rollback correctness
+- [ ] **Signal tests** - SIGINT/SIGTERM handling
+- [ ] **Secrets/configs tests** - Lifecycle testing
+- [ ] **Performance tests** - Large stacks (20+ services)
+
+#### Documentation
+
+- [x] **README** - Comprehensive usage guide
+- [x] **Technical spec** - Full architecture document
+- [ ] **API documentation** - GoDoc for all packages
+- [ ] **Examples** - Real-world compose files (with secrets, configs, multiple networks)
+- [ ] **Troubleshooting guide** - Common errors and solutions (✅ added to README)
+- [ ] **Migration guide** - From `docker stack deploy` to `stackman`
+
+### 📦 Priority 5: Nice-to-Have
+
+- [ ] **Auto-completion** - Bash/Zsh/Fish completion scripts
+- [ ] **Plugin system** - Custom hooks (pre-deploy, post-deploy, on-failure)
+- [ ] **Remote snapshots** - Store snapshots in S3/registry for team collaboration
+- [ ] **Canary deployments** - Built-in support for gradual rollouts
+- [ ] **Blue-green deployments** - Automated traffic switching
+- [ ] **Notification integrations** - Slack/Discord/PagerDuty webhooks
+- [ ] **Web UI** - Optional web dashboard for stack status
+- [ ] **Multi-stack orchestration** - Deploy multiple stacks with dependencies
+
+### 🐛 Known Issues
+
+- [ ] **Race condition in event handling** - Rare: events may be missed if subscription starts after task creation (
+  workaround: reconciliation loop)
+- [ ] **Large image pull timeout** - No streaming progress for image pull in logs
+- [ ] **No task restart limit** - Swarm may restart failed tasks indefinitely
+- [ ] **Health check log truncation** - Long health check output is truncated
+- [ ] **Parallel updates not implemented** - `--parallel` flag parsed but not used
+
+### 📊 Implementation Status Summary
+
+| Category            | Implemented | Planned | Total  | % Complete |
+|---------------------|-------------|---------|--------|------------|
+| Core Deployment     | 9           | 3       | 12     | 75%        |
+| Compose Support     | 4           | 3       | 7      | 57%        |
+| Resources           | 2           | 5       | 7      | 29%        |
+| Commands            | 2           | 5       | 7      | 29%        |
+| Safety & Validation | 1           | 4       | 5      | 20%        |
+| Testing             | 2           | 6       | 8      | 25%        |
+| **TOTAL**           | **20**      | **26**  | **46** | **43%**    |
+
+### Contributing Priority
+
+If you want to contribute, focus on these high-impact items:
+
+1. **Exit code alignment** - Easy win, improves CI/CD integration
+2. **Secrets/Configs creation** - Required for full compose parity
+3. **diff command** - Highly requested, relatively simple
+4. **JSON output mode** - Enables advanced tooling integration
+5. **Reconciliation loop** - Improves reliability
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 ---
 
@@ -555,6 +1244,7 @@ See [LICENSE](LICENSE) for details.
 Developed by [SomeBlackMagic](https://github.com/SomeBlackMagic)
 
 Built with:
+
 - [Docker Engine API](https://docs.docker.com/engine/api/)
 - [Go](https://golang.org/)
 - [gopkg.in/yaml.v3](https://github.com/go-yaml/yaml) for YAML parsing

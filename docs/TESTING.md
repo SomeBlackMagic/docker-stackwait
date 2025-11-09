@@ -78,7 +78,7 @@ docker swarm leave --force
 
 2. **Path Resolution**
    - Volume mount path conversion
-   - SWARM_STACK_PATH support
+   - STACKMAN_WORKDIR support
    - Relative and absolute paths
 
 ### Test Stack Components

@@ -6,8 +6,6 @@ package main
 import (
 	"context"
 	"os"
-	"os/exec"
-	"strings"
 	"testing"
 	"time"
 
@@ -23,165 +21,7 @@ const (
 	testTimeout   = 3 * time.Minute
 )
 
-// TestIntegration_FullDeploymentCycle tests complete deployment lifecycle
-func TestIntegration_FullDeploymentCycle(t *testing.T) {
-	// Check if Docker is available
-	if !isDockerAvailable(t) {
-		t.Skip("Docker is not available or not in swarm mode")
-	}
-
-	// Ensure clean state
-	cleanup(t)
-	defer cleanup(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
-	defer cancel()
-
-	// Build stackman binary
-	t.Log("Building stackman binary...")
-	buildCmd := exec.Command("go", "build", "-o", "stackman")
-	if output, err := buildCmd.CombinedOutput(); err != nil {
-		t.Fatalf("Failed to build stackman: %v\n%s", err, output)
-	}
-
-	// Test 1: Initial deployment
-	t.Run("InitialDeployment", func(t *testing.T) {
-		t.Log("Testing initial deployment...")
-
-		cmd := exec.CommandContext(ctx, "./stackman", "apply",
-			"-n", testStackName,
-			"-f", composeFile,
-			"-timeout", "2m",
-		)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("Initial deployment failed: %v", err)
-		}
-
-		// Verify deployment
-		if err := verifyStack(t, testStackName, 2); err != nil {
-			t.Errorf("Stack verification failed: %v", err)
-		}
-	})
-
-	// Test 2: Check services are healthy
-	t.Run("VerifyServicesHealthy", func(t *testing.T) {
-		t.Log("Verifying services are healthy...")
-
-		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-		if err != nil {
-			t.Fatalf("Failed to create Docker client: %v", err)
-		}
-		defer cli.Close()
-
-		// Wait for services to become healthy
-		deadline := time.Now().Add(2 * time.Minute)
-		for time.Now().Before(deadline) {
-			healthy, err := checkServicesHealth(ctx, cli, testStackName)
-			if err != nil {
-				t.Logf("Health check error: %v", err)
-			}
-			if healthy {
-				t.Log("All services are healthy!")
-				return
-			}
-			time.Sleep(5 * time.Second)
-		}
-
-		t.Error("Services did not become healthy within timeout")
-	})
-
-	// Test 3: Update deployment (change replicas)
-	t.Run("UpdateDeployment", func(t *testing.T) {
-		t.Log("Testing deployment update...")
-
-		// Create modified compose file with different replica count
-		modifiedCompose := strings.ReplaceAll(readFile(t, composeFile),
-			"replicas: 1", "replicas: 2")
-		modifiedFile := "testdata/simple-stack-modified.yml"
-		writeFile(t, modifiedFile, modifiedCompose)
-		defer os.Remove(modifiedFile)
-
-		cmd := exec.CommandContext(ctx, "./stackman", "apply",
-			"-n", testStackName,
-			"-f", modifiedFile,
-			"-timeout", "2m",
-		)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("Update deployment failed: %v", err)
-		}
-
-		// Verify updated replicas
-		time.Sleep(10 * time.Second)
-		if err := verifyStack(t, testStackName, 2); err != nil {
-			t.Errorf("Stack verification after update failed: %v", err)
-		}
-	})
-
-	// Test 4: Cleanup (implicit in defer)
-	t.Run("Cleanup", func(t *testing.T) {
-		t.Log("Testing cleanup...")
-		// cleanup() will be called by defer
-	})
-}
-
-// TestIntegration_PathResolution tests volume path resolution
-func TestIntegration_PathResolution(t *testing.T) {
-	if !isDockerAvailable(t) {
-		t.Skip("Docker is not available or not in swarm mode")
-	}
-
-	// Create compose file with volume mounts
-	composeWithVolumes := `version: "3.8"
-services:
-  test:
-    image: alpine:latest
-    command: sleep 300
-    volumes:
-      - ./testdata:/data:ro
-      - test-volume:/app
-    deploy:
-      replicas: 1
-
-volumes:
-  test-volume:
-    driver: local
-`
-	volumeComposeFile := "testdata/volume-test.yml"
-	writeFile(t, volumeComposeFile, composeWithVolumes)
-	defer os.Remove(volumeComposeFile)
-
-	stackName := "stackman-volume-test"
-	defer cleanupStack(t, stackName)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "./stackman", "apply",
-		"-n", stackName,
-		"-f", volumeComposeFile,
-		"-timeout", "1m",
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("Deployment with volumes failed: %v", err)
-	}
-
-	// Verify service was created
-	if err := verifyStack(t, stackName, 1); err != nil {
-		t.Errorf("Stack with volumes verification failed: %v", err)
-	}
-}
-
-// Helper functions
-
+// isDockerAvailable checks if Docker is available and in swarm mode
 func isDockerAvailable(t *testing.T) bool {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -206,10 +46,12 @@ func isDockerAvailable(t *testing.T) bool {
 	return true
 }
 
+// cleanup removes test stack resources
 func cleanup(t *testing.T) {
 	cleanupStack(t, testStackName)
 }
 
+// cleanupStack removes all resources for a specific stack
 func cleanupStack(t *testing.T, stackName string) {
 	t.Logf("Cleaning up stack: %s", stackName)
 
@@ -257,6 +99,7 @@ func cleanupStack(t *testing.T, stackName string) {
 	}
 }
 
+// verifyStack checks that the expected number of services exist for a stack
 func verifyStack(t *testing.T, stackName string, expectedServices int) error {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -284,6 +127,7 @@ func verifyStack(t *testing.T, stackName string, expectedServices int) error {
 	return nil
 }
 
+// checkServicesHealth verifies all services in a stack are healthy
 func checkServicesHealth(ctx context.Context, cli *client.Client, stackName string) (bool, error) {
 	filter := filters.NewArgs()
 	filter.Add("label", "com.docker.stack.namespace="+stackName)
@@ -333,6 +177,7 @@ func checkServicesHealth(ctx context.Context, cli *client.Client, stackName stri
 	return allHealthy, nil
 }
 
+// readFile reads file content
 func readFile(t *testing.T, path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -341,6 +186,7 @@ func readFile(t *testing.T, path string) string {
 	return string(data)
 }
 
+// writeFile writes content to file
 func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("Failed to write file %s: %v", path, err)

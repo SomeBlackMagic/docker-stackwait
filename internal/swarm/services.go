@@ -86,12 +86,9 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 		existing := existingServices[0]
 		log.Printf("Updating service: %s", fullName)
 
-		// Copy deployment ID from an existing service if it exists
-		// This prevents unnecessary service updates when only deployment ID changes
-		if existingDeployID, ok := existing.Spec.Labels["com.stackman.deploy.id"]; ok {
-			spec.Labels["com.stackman.deploy.id"] = existingDeployID
-			spec.TaskTemplate.ContainerSpec.Labels["com.stackman.deploy.id"] = existingDeployID
-		}
+		// NOTE: We intentionally use the NEW deployID for updates
+		// The deployID must be updated so that health checks can identify new tasks
+		// Do NOT copy the old deployID - this would break task tracking
 
 		// Get current tasks before update to track recreation
 		// Retry with exponential backoff for API timeouts

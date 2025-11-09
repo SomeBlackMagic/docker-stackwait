@@ -238,7 +238,7 @@ func convertCommand(cmd interface{}) ([]string, error) {
 func convertVolumes(volumes []interface{}) ([]mount.Mount, error) {
 	var mounts []mount.Mount
 
-	// Create path resolver using SWARM_STACK_PATH or current directory
+	// Create path resolver using STACKMAN_WORKDIR or current directory
 	resolver, err := paths.NewResolver()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create path resolver: %w", err)

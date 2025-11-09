@@ -72,18 +72,18 @@ func TestConvertVolumes_PathResolution(t *testing.T) {
 
 func TestConvertVolumes_WithSWARMSTACKPATH(t *testing.T) {
 	// Save and restore env
-	originalEnv := os.Getenv("SWARM_STACK_PATH")
+	originalEnv := os.Getenv("STACKMAN_WORKDIR")
 	defer func() {
 		if originalEnv != "" {
-			os.Setenv("SWARM_STACK_PATH", originalEnv)
+			os.Setenv("STACKMAN_WORKDIR", originalEnv)
 		} else {
-			os.Unsetenv("SWARM_STACK_PATH")
+			os.Unsetenv("STACKMAN_WORKDIR")
 		}
 	}()
 
 	// Set custom base path
 	customPath := "/custom/base"
-	os.Setenv("SWARM_STACK_PATH", customPath)
+	os.Setenv("STACKMAN_WORKDIR", customPath)
 
 	volumes := []interface{}{"./data:/app/data"}
 	mounts, err := convertVolumes(volumes)

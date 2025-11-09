@@ -13,7 +13,7 @@
 - **Coverage**:
   - `internal/compose` - Path resolution, volume conversion, compose parsing
   - `internal/health` - Task monitoring, events, health checks
-  - `internal/paths` - Path resolver with SWARM_STACK_PATH support
+  - `internal/paths` - Path resolver with STACKMAN_WORKDIR support
 
 ### Integration Tests
 - **Location**: `./integration_test.go`
@@ -104,7 +104,7 @@ Test Status: ✅ PASS
 ✅ Docker Swarm stack deployment
 ✅ Service health monitoring
 ✅ Volume path resolution (relative/absolute)
-✅ SWARM_STACK_PATH environment variable support
+✅ STACKMAN_WORKDIR environment variable support
 ✅ Service updates and scaling
 ✅ Network creation (overlay)
 ✅ Volume creation (local)

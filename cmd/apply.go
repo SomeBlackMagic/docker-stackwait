@@ -366,11 +366,31 @@ func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName s
 			unhealthyTasks := []string{}
 
 			for _, svc := range updatedServices {
+				// Get current service by name to get updated service ID
+				// During updates, service ID remains the same but this ensures we have the latest service state
+				serviceFilter := filters.NewArgs()
+				serviceFilter.Add("name", svc.ServiceName)
+				services, err := cli.ServiceList(ctx, types.ServiceListOptions{
+					Filters: serviceFilter,
+				})
+				if err != nil {
+					log.Printf("[HealthCheck] Failed to get service %s: %v", svc.ServiceName, err)
+					allHealthy = false
+					continue
+				}
+				if len(services) == 0 {
+					log.Printf("[HealthCheck] Service %s not found", svc.ServiceName)
+					allHealthy = false
+					continue
+				}
+
+				currentServiceID := services[0].ID
+
 				// Get ALL tasks for this service
 				// Note: Docker API does not support label filtering for tasks, only for containers
 				// So we get all tasks and filter manually
 				filter := filters.NewArgs()
-				filter.Add("service", svc.ServiceID)
+				filter.Add("service", currentServiceID)
 
 				allTasks, err := cli.TaskList(ctx, types.TaskListOptions{
 					Filters: filter,

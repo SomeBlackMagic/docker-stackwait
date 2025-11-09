@@ -63,10 +63,10 @@ func TestResolver_Resolve(t *testing.T) {
 }
 
 func TestNewResolver(t *testing.T) {
-	// Test with SWARM_STACK_PATH set
+	// Test with STACKMAN_WORKDIR set
 	testPath := "/test/path"
-	os.Setenv("SWARM_STACK_PATH", testPath)
-	defer os.Unsetenv("SWARM_STACK_PATH")
+	os.Setenv("STACKMAN_WORKDIR", testPath)
+	defer os.Unsetenv("STACKMAN_WORKDIR")
 
 	r, err := NewResolver()
 	if err != nil {
@@ -78,8 +78,8 @@ func TestNewResolver(t *testing.T) {
 		t.Errorf("NewResolver() basePath = %q, want %q", r.BasePath(), absTestPath)
 	}
 
-	// Test without SWARM_STACK_PATH (should use current directory)
-	os.Unsetenv("SWARM_STACK_PATH")
+	// Test without STACKMAN_WORKDIR (should use current directory)
+	os.Unsetenv("STACKMAN_WORKDIR")
 	r2, err := NewResolver()
 	if err != nil {
 		t.Fatalf("NewResolver() error = %v", err)
