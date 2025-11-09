@@ -417,7 +417,7 @@ func (m *Monitor) GetStats() (healthChecks, failedChecks int, lastSeen time.Time
 func (m *Monitor) IsHealthy() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.healthStatus == "healthy"
+	return m.healthStatus == container.Healthy
 }
 
 // WaitForHealthy waits until task becomes healthy or times out

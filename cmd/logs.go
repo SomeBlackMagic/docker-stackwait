@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 )
 
@@ -147,7 +148,7 @@ func runLogs(stackName string, opts *LogsOptions) error {
 		}
 
 		// Skip non-running tasks unless we're showing history
-		if task.Status.State != "running" && task.Status.State != "complete" {
+		if task.Status.State != swarm.TaskStateRunning && task.Status.State != swarm.TaskStateComplete {
 			continue
 		}
 

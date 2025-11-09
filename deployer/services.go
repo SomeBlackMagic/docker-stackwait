@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/swarm"
 
@@ -366,7 +367,7 @@ func (d *StackDeployer) waitForServiceUpdate(ctx context.Context, serviceID stri
 							if inspect.State.Health != nil {
 								healthStatus := inspect.State.Health.Status
 								// Allow "starting" as transitional state
-								if healthStatus != "healthy" && healthStatus != "starting" {
+								if healthStatus != container.Healthy && healthStatus != container.Starting {
 									newTasksHealthy = false
 								}
 							}

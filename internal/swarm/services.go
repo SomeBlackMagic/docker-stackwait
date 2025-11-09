@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/swarm"
 
@@ -71,8 +71,8 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 	// Get registry auth for the image
 	registryAuth := getRegistryAuth(service.Image)
 
-	// Check if service exists
-	existingServices, err := d.cli.ServiceList(ctx, types.ServiceListOptions{
+	// Check if a service exists
+	existingServices, err := d.cli.ServiceList(ctx, swarm.ServiceListOptions{
 		Filters: filters.NewArgs(
 			filters.Arg("name", fullName),
 		),
@@ -100,7 +100,7 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 		var oldTasks []swarm.Task
 		maxRetries := 3
 		for retry := 0; retry < maxRetries; retry++ {
-			oldTasks, err = d.cli.TaskList(ctx, types.TaskListOptions{
+			oldTasks, err = d.cli.TaskList(ctx, swarm.TaskListOptions{
 				Filters: filters.NewArgs(
 					filters.Arg("service", existing.ID),
 					filters.Arg("desired-state", "running"),
@@ -125,7 +125,7 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 			existing.ID,
 			existing.Version,
 			*spec,
-			types.ServiceUpdateOptions{
+			swarm.ServiceUpdateOptions{
 				EncodedRegistryAuth: registryAuth,
 			},
 		)
@@ -140,7 +140,7 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 		// Retry with exponential backoff for API timeouts
 		var newTasks []swarm.Task
 		for retry := 0; retry < maxRetries; retry++ {
-			newTasks, err = d.cli.TaskList(ctx, types.TaskListOptions{
+			newTasks, err = d.cli.TaskList(ctx, swarm.TaskListOptions{
 				Filters: filters.NewArgs(
 					filters.Arg("service", existing.ID),
 					filters.Arg("desired-state", "running"),
@@ -179,7 +179,7 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 			log.Printf("Service %s updated, new tasks will be created", fullName)
 
 			// Get updated service to retrieve new version
-			updatedService, _, err := d.cli.ServiceInspectWithRaw(ctx, existing.ID, types.ServiceInspectOptions{})
+			updatedService, _, err := d.cli.ServiceInspectWithRaw(ctx, existing.ID, swarm.ServiceInspectOptions{})
 			if err != nil {
 				return nil, fmt.Errorf("failed to inspect updated service: %w", err)
 			}
@@ -203,7 +203,7 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 		// Create new service
 		log.Printf("Creating service: %s", fullName)
 
-		createResponse, err := d.cli.ServiceCreate(ctx, *spec, types.ServiceCreateOptions{
+		createResponse, err := d.cli.ServiceCreate(ctx, *spec, swarm.ServiceCreateOptions{
 			EncodedRegistryAuth: registryAuth,
 		})
 		if err != nil {
@@ -211,13 +211,13 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 		}
 		log.Printf("Service %s created", fullName)
 
-		// Get created service to retrieve version
-		createdService, _, err := d.cli.ServiceInspectWithRaw(ctx, createResponse.ID, types.ServiceInspectOptions{})
+		// Get created service to retrieve a version
+		createdService, _, err := d.cli.ServiceInspectWithRaw(ctx, createResponse.ID, swarm.ServiceInspectOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to inspect created service: %w", err)
 		}
 
-		// Return create result - service was created (changed)
+		// Return creates result - service was created (changed)
 		return &ServiceUpdateResult{
 			ServiceID:   createResponse.ID,
 			ServiceName: fullName,
@@ -231,7 +231,7 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 
 // GetStackServices returns all services in the stack
 func (d *StackDeployer) GetStackServices(ctx context.Context) ([]swarm.Service, error) {
-	return d.cli.ServiceList(ctx, types.ServiceListOptions{
+	return d.cli.ServiceList(ctx, swarm.ServiceListOptions{
 		Filters: filters.NewArgs(
 			filters.Arg("label", fmt.Sprintf("com.docker.stack.namespace=%s", d.stackName)),
 		),
@@ -273,7 +273,7 @@ func (d *StackDeployer) waitForServiceUpdate(ctx context.Context, serviceID stri
 		var err error
 		maxRetries := 3
 		for retry := 0; retry < maxRetries; retry++ {
-			currentTasks, err = d.cli.TaskList(ctx, types.TaskListOptions{
+			currentTasks, err = d.cli.TaskList(ctx, swarm.TaskListOptions{
 				Filters: filters.NewArgs(
 					filters.Arg("service", serviceID),
 				),
@@ -318,7 +318,7 @@ func (d *StackDeployer) waitForServiceUpdate(ctx context.Context, serviceID stri
 				continue
 			}
 
-			// Check if new task failed or completed abnormally
+			// Check if a new task failed or completed abnormally
 			// Skip tasks that completed successfully (exit code 0, no error)
 			isFailed := task.Status.State == swarm.TaskStateFailed ||
 				task.Status.State == swarm.TaskStateRejected ||
@@ -362,7 +362,7 @@ func (d *StackDeployer) waitForServiceUpdate(ctx context.Context, serviceID stri
 		oldTasksShutdown := true
 		for _, task := range currentTasks {
 			if oldTaskIDs[task.ID] {
-				// Old task still exists - check if it's running
+				// An old task still exists - check if it's running
 				if task.Status.State == swarm.TaskStateRunning {
 					oldTasksShutdown = false
 					break
@@ -389,11 +389,11 @@ func (d *StackDeployer) waitForServiceUpdate(ctx context.Context, serviceID stri
 						containerID := task.Status.ContainerStatus.ContainerID
 						inspect, err := d.cli.ContainerInspect(ctx, containerID)
 						if err == nil {
-							// If container has healthcheck, wait for it to be healthy
+							// If container has health check, wait for it to be healthy
 							if inspect.State.Health != nil {
 								healthStatus := inspect.State.Health.Status
-								// Allow "starting" as transitional state
-								if healthStatus != "healthy" && healthStatus != "starting" {
+								// Allow "starting" as a transitional state
+								if healthStatus != container.Healthy && healthStatus != container.Starting {
 									newTasksHealthy = false
 								}
 							}

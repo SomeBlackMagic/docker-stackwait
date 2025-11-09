@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/swarm"
 )
@@ -175,7 +176,7 @@ func (m *HealthMonitor) WaitHealthy(ctx context.Context) bool {
 				containerName := strings.TrimPrefix(inspect.Name, "/")
 
 				// Check container status
-				if inspect.State.Status != "running" {
+				if inspect.State.Status != container.StateRunning {
 					containerStatuses = append(containerStatuses, fmt.Sprintf("%s: %s", containerName, inspect.State.Status))
 					allRunning = false
 					continue
@@ -188,7 +189,7 @@ func (m *HealthMonitor) WaitHealthy(ctx context.Context) bool {
 					containerStatuses = append(containerStatuses, fmt.Sprintf("%s: running/%s", containerName, healthStatus))
 
 					// Allow "starting" as intermediate state
-					if healthStatus != "healthy" && healthStatus != "starting" {
+					if healthStatus != container.Healthy && healthStatus != container.Starting {
 						allHealthy = false
 					}
 				} else {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	dockerswarm "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
@@ -436,7 +437,7 @@ func waitForAllTasksHealthy(ctx context.Context, cli *client.Client, stackName s
 
 						// If container has health check, wait for healthy status
 						if containerInfo.State.Health != nil {
-							if containerInfo.State.Health.Status != "healthy" {
+							if containerInfo.State.Health.Status != container.Healthy {
 								allHealthy = false
 								unhealthyTasks = append(unhealthyTasks, fmt.Sprintf("%s/%s (health: %s)", svc.ServiceName, t.ID[:12], containerInfo.State.Health.Status))
 								log.Printf("[HealthCheck] ⏳ Task %s (%s) is %s", t.ID[:12], svc.ServiceName, containerInfo.State.Health.Status)
