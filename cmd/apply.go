@@ -17,11 +17,11 @@ import (
 	dockerswarm "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 
-	"stackman/internal/compose"
-	"stackman/internal/deployment"
-	"stackman/internal/health"
-	"stackman/internal/snapshot"
-	"stackman/internal/swarm"
+	"github.com/SomeBlackMagic/stackman/internal/compose"
+	"github.com/SomeBlackMagic/stackman/internal/deployment"
+	"github.com/SomeBlackMagic/stackman/internal/health"
+	"github.com/SomeBlackMagic/stackman/internal/snapshot"
+	"github.com/SomeBlackMagic/stackman/internal/swarm"
 )
 
 // ExecuteApply runs the apply command

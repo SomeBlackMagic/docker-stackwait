@@ -44,6 +44,7 @@ type Monitor struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	shutdownOnce sync.Once
+	stopped      bool
 
 	// Thread safety
 	mu sync.RWMutex
@@ -129,6 +130,9 @@ func (m *Monitor) Start(ctx context.Context) error {
 // Stop signals the monitor to stop
 func (m *Monitor) Stop() {
 	m.shutdownOnce.Do(func() {
+		m.mu.Lock()
+		m.stopped = true
+		m.mu.Unlock()
 		close(m.stopChan)
 		m.cancel()
 	})
@@ -137,6 +141,14 @@ func (m *Monitor) Stop() {
 // SendEvent sends an event to this task monitor
 // Returns false if monitor is shutting down
 func (m *Monitor) SendEvent(event Event) bool {
+	m.mu.RLock()
+	stopped := m.stopped
+	m.mu.RUnlock()
+
+	if stopped {
+		return false
+	}
+
 	select {
 	case m.eventChan <- event:
 		return true

@@ -11,7 +11,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 
-	"stackman/internal/swarm"
+	"github.com/SomeBlackMagic/stackman/internal/swarm"
 )
 
 // ExecuteRollback runs the rollback command

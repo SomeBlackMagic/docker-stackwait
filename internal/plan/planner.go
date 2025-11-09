@@ -6,7 +6,7 @@ import (
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 
-	"stackman/internal/compose"
+	"github.com/SomeBlackMagic/stackman/internal/compose"
 )
 
 // Planner creates deployment plans by comparing current and desired state

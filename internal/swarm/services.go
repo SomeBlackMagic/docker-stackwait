@@ -10,7 +10,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/swarm"
 
-	"stackman/internal/compose"
+	"github.com/SomeBlackMagic/stackman/internal/compose"
 )
 
 func (d *StackDeployer) deployServices(ctx context.Context, services map[string]*compose.Service, deployID string) (*DeploymentResult, error) {

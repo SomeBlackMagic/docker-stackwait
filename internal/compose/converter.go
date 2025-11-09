@@ -12,7 +12,7 @@ import (
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/go-units"
 
-	"stackman/internal/paths"
+	"github.com/SomeBlackMagic/stackman/internal/paths"
 )
 
 // ConvertToSwarmSpec converts a compose service to Docker Swarm ServiceSpec

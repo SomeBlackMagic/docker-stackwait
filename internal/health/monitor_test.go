@@ -54,7 +54,6 @@ func TestMonitor_SendEvent(t *testing.T) {
 
 	// After stop, SendEvent should fail
 	monitor.Stop()
-	time.Sleep(10 * time.Millisecond)
 
 	if monitor.SendEvent(event) {
 		t.Error("SendEvent should fail after stop")

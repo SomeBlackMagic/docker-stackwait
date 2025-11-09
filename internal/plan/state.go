@@ -1,7 +1,7 @@
 package plan
 
 import (
-	"stackman/internal/compose"
+	"github.com/SomeBlackMagic/stackman/internal/compose"
 )
 
 // BuildDesiredState creates DesiredState from a parsed compose file

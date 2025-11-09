@@ -6,7 +6,7 @@ import (
 
 	"github.com/docker/docker/api/types/swarm"
 
-	"stackman/internal/compose"
+	"github.com/SomeBlackMagic/stackman/internal/compose"
 )
 
 func TestCreatePlan_EmptyState(t *testing.T) {

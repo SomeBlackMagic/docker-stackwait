@@ -1,5 +1,3 @@
-# Stackman
-
    <picture>
       <source media="(prefers-color-scheme: light)" srcset="https://cdn.jsdelivr.net/gh/SomeBlackMagic/stackman@master/docs/9cb7e16c-f057-4660-a96f-258fd980389d.png" width="350" alt="Stackman Logo">
       <img src="https://cdn.jsdelivr.net/gh/SomeBlackMagic/stackman@master/docs/2bcf0cd7-f652-4fd9-9c67-ea1dc4515ca8.png" width="350" alt="Cilium Logo">

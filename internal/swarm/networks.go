@@ -7,7 +7,7 @@ import (
 
 	"github.com/docker/docker/api/types/network"
 
-	"stackman/internal/compose"
+	"github.com/SomeBlackMagic/stackman/internal/compose"
 )
 
 func (d *StackDeployer) createNetworks(ctx context.Context, networks map[string]*compose.Network) error {

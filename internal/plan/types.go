@@ -1,7 +1,7 @@
 package plan
 
 import (
-	"stackman/internal/compose"
+	"github.com/SomeBlackMagic/stackman/internal/compose"
 
 	"github.com/docker/docker/api/types/swarm"
 )
@@ -18,49 +18,49 @@ const (
 
 // ServiceAction represents a planned change to a service
 type ServiceAction struct {
-	Name          string
-	Action        ActionType
-	CurrentSpec   *swarm.ServiceSpec
-	DesiredSpec   *swarm.ServiceSpec
-	CurrentMeta   *swarm.Meta
-	ServiceID     string
-	Changes       []string // Human-readable list of changes
+	Name        string
+	Action      ActionType
+	CurrentSpec *swarm.ServiceSpec
+	DesiredSpec *swarm.ServiceSpec
+	CurrentMeta *swarm.Meta
+	ServiceID   string
+	Changes     []string // Human-readable list of changes
 }
 
 // NetworkAction represents a planned change to a network
 type NetworkAction struct {
-	Name        string
-	Action      ActionType
-	NetworkID   string
-	Driver      string
-	Labels      map[string]string
-}
-
-// VolumeAction represents a planned change to a volume
-type VolumeAction struct {
 	Name      string
 	Action    ActionType
-	VolumeID  string
+	NetworkID string
 	Driver    string
 	Labels    map[string]string
 }
 
+// VolumeAction represents a planned change to a volume
+type VolumeAction struct {
+	Name     string
+	Action   ActionType
+	VolumeID string
+	Driver   string
+	Labels   map[string]string
+}
+
 // SecretAction represents a planned change to a secret
 type SecretAction struct {
-	Name      string
-	Action    ActionType
-	SecretID  string
-	Labels    map[string]string
-	Data      []byte // Only set for create/update
+	Name     string
+	Action   ActionType
+	SecretID string
+	Labels   map[string]string
+	Data     []byte // Only set for create/update
 }
 
 // ConfigAction represents a planned change to a config
 type ConfigAction struct {
-	Name      string
-	Action    ActionType
-	ConfigID  string
-	Labels    map[string]string
-	Data      []byte // Only set for create/update
+	Name     string
+	Action   ActionType
+	ConfigID string
+	Labels   map[string]string
+	Data     []byte // Only set for create/update
 }
 
 // Plan represents the full deployment plan

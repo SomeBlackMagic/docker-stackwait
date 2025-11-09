@@ -10,7 +10,7 @@ import (
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/api/types/volume"
 
-	"stackman/internal/plan"
+	"github.com/SomeBlackMagic/stackman/internal/plan"
 )
 
 // GetCurrentState reads the current state of a stack from Swarm

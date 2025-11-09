@@ -1,7 +1,7 @@
 package main
 
 import (
-	"stackman/cmd"
+	"github.com/SomeBlackMagic/stackman/cmd"
 )
 
 func main() {

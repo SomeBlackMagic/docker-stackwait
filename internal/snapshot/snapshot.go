@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"stackman/internal/swarm"
+	"github.com/SomeBlackMagic/stackman/internal/swarm"
 )
 
 // createSnapshot creates a snapshot of current stack state before deployment

@@ -7,7 +7,7 @@ import (
 
 	"github.com/docker/docker/api/types/volume"
 
-	"stackman/internal/compose"
+	"github.com/SomeBlackMagic/stackman/internal/compose"
 )
 
 func (d *StackDeployer) createVolumes(ctx context.Context, volumes map[string]*compose.Volume) error {
