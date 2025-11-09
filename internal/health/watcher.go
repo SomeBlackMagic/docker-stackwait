@@ -660,7 +660,7 @@ func (w *Watcher) discoverTasks(ctx context.Context) {
 		filter.Add("service", w.filterServiceID)
 	}
 
-	tasks, err := w.client.TaskList(ctx, types.TaskListOptions{
+	tasks, err := w.client.TaskList(ctx, swarm.TaskListOptions{
 		Filters: filter,
 	})
 	if err != nil {

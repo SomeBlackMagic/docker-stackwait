@@ -58,8 +58,6 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 	}
 	spec.TaskTemplate.ContainerSpec.Labels["com.stackman.deploy.id"] = deployID
 
-	log.Printf("Service %s: adding deployment label (DeployID: %s)", fullName, deployID)
-
 	// Attach to default network if no networks specified
 	if service.Networks == nil {
 		defaultNetwork := fmt.Sprintf("%s_default", d.stackName)
@@ -67,9 +65,6 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 			{Target: defaultNetwork},
 		}
 	}
-
-	// Get registry auth for the image
-	registryAuth := getRegistryAuth(service.Image)
 
 	// Check if a service exists
 	existingServices, err := d.cli.ServiceList(ctx, swarm.ServiceListOptions{
@@ -83,12 +78,15 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 		return nil, fmt.Errorf("failed to list services: %w", err)
 	}
 
+	// Get registry auth for the image
+	registryAuth := getRegistryAuth(service.Image)
+
 	if len(existingServices) > 0 {
 		// Update existing service
 		existing := existingServices[0]
 		log.Printf("Updating service: %s", fullName)
 
-		// Copy deployment ID from existing service if it exists
+		// Copy deployment ID from an existing service if it exists
 		// This prevents unnecessary service updates when only deployment ID changes
 		if existingDeployID, ok := existing.Spec.Labels["com.stackman.deploy.id"]; ok {
 			spec.Labels["com.stackman.deploy.id"] = existingDeployID
@@ -111,8 +109,7 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 			}
 			if retry < maxRetries-1 {
 				waitTime := time.Duration(retry+1) * time.Second
-				log.Printf("failed to list old tasks (attempt %d/%d): %v, retrying in %v",
-					retry+1, maxRetries, err, waitTime)
+				log.Printf("failed to list old tasks (attempt %d/%d): %v, retrying in %v", retry+1, maxRetries, err, waitTime)
 				time.Sleep(waitTime)
 			}
 		}
@@ -151,8 +148,7 @@ func (d *StackDeployer) deployService(ctx context.Context, serviceName string, s
 			}
 			if retry < maxRetries-1 {
 				waitTime := time.Duration(retry+1) * time.Second
-				log.Printf("failed to list new tasks (attempt %d/%d): %v, retrying in %v",
-					retry+1, maxRetries, err, waitTime)
+				log.Printf("failed to list new tasks (attempt %d/%d): %v, retrying in %v", retry+1, maxRetries, err, waitTime)
 				time.Sleep(waitTime)
 			}
 		}

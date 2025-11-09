@@ -2,6 +2,7 @@ package compose
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -199,9 +200,16 @@ func convertEnvironment(env interface{}) ([]string, error) {
 		}
 		return result, nil
 	case map[string]interface{}:
+		// Sort keys to ensure deterministic output
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
 		result := make([]string, 0, len(v))
-		for key, val := range v {
-			result = append(result, fmt.Sprintf("%s=%v", key, val))
+		for _, key := range keys {
+			result = append(result, fmt.Sprintf("%s=%v", key, v[key]))
 		}
 		return result, nil
 	default:
