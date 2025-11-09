@@ -1,4 +1,4 @@
-module stackman
+module github.com/SomeBlackMagic/stackman
 
 go 1.24.0
 
