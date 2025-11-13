@@ -152,7 +152,7 @@ jobs:
         with:
           upload_url: ${{ steps.rel.outputs.upload_url }}
           asset_path: artifacts/stackman-amd64-linux
-          asset_name: stackman-amd64-linux
+          asset_name: stackman-linux-amd64
           asset_content_type: application/octet-stream
 
       - name: Upload arm64 binary to release
@@ -163,5 +163,5 @@ jobs:
         with:
           upload_url: ${{ steps.rel.outputs.upload_url }}
           asset_path: artifacts/stackman-arm64-linux
-          asset_name: stackman-arm64-linux
+          asset_name: stackman-linux-arm64
           asset_content_type: application/octet-stream
